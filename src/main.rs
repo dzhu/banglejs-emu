@@ -6,8 +6,8 @@ use std::{
 };
 
 use wasmer::{
-    Extern, Function, FunctionType, Instance, Memory, MemoryType, Module, Pages, RuntimeError,
-    Store, Type, TypedFunction, Value,
+    Extern, Function, FunctionEnv, FunctionType, Instance, Memory, MemoryType, Module, Pages,
+    RuntimeError, Store, Type, TypedFunction, Value,
 };
 use wasmer_wasi::{import_object_for_all_wasi_versions, WasiState};
 
@@ -32,13 +32,59 @@ fn main() -> anyhow::Result<()> {
 
     let env_name = |s: &str| ("env".to_owned(), s.to_owned());
 
+    #[derive(Clone, Debug)]
+    struct Env {
+        instance: Arc<Mutex<Option<Instance>>>,
+    }
+    let instance_env = FunctionEnv::new(
+        store,
+        Env {
+            instance: Arc::new(Mutex::new(None)),
+        },
+    );
+
+    fn js_handle_io(store: &mut Store, instance: &Instance) -> anyhow::Result<()> {
+        let get_device: TypedFunction<(), i32> = instance
+            .exports
+            .get_typed_function(store, "jshGetDeviceToTransmit")?;
+        let get_char: TypedFunction<i32, i32> = instance
+            .exports
+            .get_typed_function(store, "jshGetCharToTransmit")?;
+
+        loop {
+            let device = get_device.call(store)?;
+            if device == 0 {
+                println!();
+                break Ok(());
+            }
+            let ch = char::from_u32(get_char.call(store, device)? as _).unwrap();
+            print!("{ch}");
+        }
+    }
+
     import_object.extend([
         (
             env_name("jsHandleIO"),
-            Extern::Function(Function::new(store, FunctionType::new([], []), |_| {
-                println!("jsHandleIO");
-                Ok(vec![])
-            })),
+            Extern::Function(Function::new_with_env(
+                store,
+                &instance_env,
+                FunctionType::new([], []),
+                {
+                    let store = Arc::clone(&store_arc);
+                    move |env, _| {
+                        println!("jsHandleIO");
+
+                        let instance = env.data().instance.lock().unwrap();
+                        let instance = instance.as_ref().unwrap();
+                        let mut store = store.lock().unwrap();
+                        let store = store.deref_mut();
+
+                        js_handle_io(store, instance).unwrap();
+
+                        Ok(vec![])
+                    }
+                },
+            )),
         ),
         (
             env_name("hwFlashRead"),
@@ -162,6 +208,7 @@ fn main() -> anyhow::Result<()> {
     let instance = Instance::new(store, &module, &import_object)?;
     let memory = instance.exports.get_memory("memory")?;
     wasi_env.data_mut(store).set_memory(memory.clone());
+    *instance_env.as_mut(store).instance.lock().unwrap() = Some(instance.clone());
 
     let js_init: TypedFunction<(), ()> = instance.exports.get_typed_function(&store, "jsInit")?;
     let js_idle: TypedFunction<(), i32> = instance.exports.get_typed_function(&store, "jsIdle")?;
@@ -201,6 +248,7 @@ fn main() -> anyhow::Result<()> {
     println!("==== init");
     js_init.call(store)?;
     js_send_pin_watch_event.call(store, BTN1 as i32)?;
+    js_handle_io(store, &instance)?;
 
     draw_screen(store, memory, js_gfx_get_ptr)?;
 
@@ -208,6 +256,7 @@ fn main() -> anyhow::Result<()> {
         println!("==== step {step}");
         let ret = js_idle.call(store)?;
         println!("-> {ret:?}");
+        js_handle_io(store, &instance)?;
     }
 
     Ok(())
