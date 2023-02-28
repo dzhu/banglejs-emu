@@ -11,6 +11,8 @@ use wasmer::{
 };
 use wasmer_wasi::{import_object_for_all_wasi_versions, WasiState};
 
+const BTN1: usize = 17;
+
 fn main() -> anyhow::Result<()> {
     let wasm_bytes = fs::read(env::args().nth(1).unwrap()).unwrap();
     let store_arc = Arc::new(Mutex::new(Store::default()));
@@ -25,6 +27,8 @@ fn main() -> anyhow::Result<()> {
 
     let flash = Arc::new(Mutex::new(vec![255u8; 1 << 23]));
     let pins = Arc::new(Mutex::new(vec![false; 48]));
+
+    pins.lock().unwrap()[BTN1] = true;
 
     let env_name = |s: &str| ("env".to_owned(), s.to_owned());
 
@@ -161,9 +165,45 @@ fn main() -> anyhow::Result<()> {
 
     let js_init: TypedFunction<(), ()> = instance.exports.get_typed_function(&store, "jsInit")?;
     let js_idle: TypedFunction<(), i32> = instance.exports.get_typed_function(&store, "jsIdle")?;
+    let js_send_pin_watch_event: TypedFunction<i32, ()> = instance
+        .exports
+        .get_typed_function(&store, "jsSendPinWatchEvent")?;
+    let js_gfx_get_ptr: TypedFunction<i32, i32> =
+        instance.exports.get_typed_function(&store, "jsGfxGetPtr")?;
+
+    fn draw_screen(
+        store: &mut Store,
+        memory: &Memory,
+        get: TypedFunction<i32, i32>,
+    ) -> anyhow::Result<()> {
+        let mut buf = vec![0u8; 66];
+        let memory_view = memory.view(&store);
+        for y in 0..176 {
+            let base = get.call(store, y)?;
+            memory_view.read(base as u64, &mut buf)?;
+            for x in 0..176 {
+                let bit = x * 3;
+                let byte = bit >> 3;
+                let c = ((buf[byte] >> (bit & 7))
+                    | if (bit & 7) <= 5 {
+                        0
+                    } else {
+                        buf[byte + 1] << (8 - (bit & 7))
+                    })
+                    & 7;
+                print!("\x1b[{}m ", 40 + c);
+            }
+            println!("\x1b[m");
+        }
+        Ok(())
+    }
 
     println!("==== init");
     js_init.call(store)?;
+    js_send_pin_watch_event.call(store, BTN1 as i32)?;
+
+    draw_screen(store, memory, js_gfx_get_ptr)?;
+
     for step in 0..10 {
         println!("==== step {step}");
         let ret = js_idle.call(store)?;
