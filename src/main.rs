@@ -6,6 +6,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use log::{debug, info, trace};
 use wasmer::{
     Extern, Function, FunctionEnv, FunctionType, Instance, Memory, MemoryType, Module, Pages,
     RuntimeError, Store, Type, TypedFunction, Value,
@@ -15,6 +16,8 @@ use wasmer_wasi::{import_object_for_all_wasi_versions, WasiState};
 const BTN1: usize = 17;
 
 fn main() -> anyhow::Result<()> {
+    env_logger::init();
+
     let wasm_bytes = fs::read(env::args().nth(1).unwrap()).unwrap();
     let store_arc = Arc::new(Mutex::new(Store::default()));
     let mut store = store_arc.lock().unwrap();
@@ -73,7 +76,7 @@ fn main() -> anyhow::Result<()> {
                 {
                     let store = Arc::clone(&store_arc);
                     move |env, _| {
-                        println!("jsHandleIO");
+                        debug!("jsHandleIO");
 
                         let instance = env.data().instance.lock().unwrap();
                         let instance = instance.as_ref().unwrap();
@@ -95,7 +98,7 @@ fn main() -> anyhow::Result<()> {
                 {
                     let flash = Arc::clone(&flash);
                     move |args| {
-                        println!("hwFlashRead {args:?}");
+                        trace!("hwFlashRead {args:?}");
                         match args[0] {
                             Value::I32(ind) => {
                                 Ok(vec![Value::I32(flash.lock().unwrap()[ind as usize] as i32)])
@@ -116,7 +119,7 @@ fn main() -> anyhow::Result<()> {
                     let flash = Arc::clone(&flash);
                     let store = Arc::clone(&store_arc);
                     move |env, args| {
-                        println!("hwFlashWritePtr {args:?}");
+                        trace!("hwFlashWritePtr {args:?}");
                         let flash_addr = args[0].unwrap_i32();
                         let base = args[1].unwrap_i32();
                         let len = args[2].unwrap_i32();
@@ -127,7 +130,7 @@ fn main() -> anyhow::Result<()> {
                             .memory_view(store.lock().unwrap().deref())
                             .read(base as u64, dst)
                             .unwrap();
-                        println!("{flash_addr} {dst:?}");
+                        trace!("writing at {flash_addr}: {dst:?}");
                         Ok(vec![])
                     }
                 },
@@ -141,7 +144,7 @@ fn main() -> anyhow::Result<()> {
                 {
                     let pins = Arc::clone(&pins);
                     move |args| {
-                        println!("hwGetPinValue {args:?}");
+                        debug!("hwGetPinValue {args:?}");
                         match args[0] {
                             Value::I32(ind) => {
                                 Ok(vec![Value::I32(pins.lock().unwrap()[ind as usize] as i32)])
@@ -160,7 +163,7 @@ fn main() -> anyhow::Result<()> {
                 {
                     let pins = Arc::clone(&pins);
                     move |args| {
-                        println!("hwSetPinValue {args:?}");
+                        debug!("hwSetPinValue {args:?}");
                         match (&args[0], &args[1]) {
                             (Value::I32(ind), Value::I32(val)) => {
                                 pins.lock().unwrap()[*ind as usize] = *val != 0;
@@ -178,7 +181,7 @@ fn main() -> anyhow::Result<()> {
                 store,
                 FunctionType::new([], [Type::F32]),
                 |_| {
-                    println!("nowMillis");
+                    trace!("nowMillis");
                     Ok(vec![Value::F32(
                         SystemTime::now()
                             .duration_since(UNIX_EPOCH)
@@ -269,7 +272,7 @@ fn main() -> anyhow::Result<()> {
         Ok(())
     }
 
-    println!("==== init");
+    info!("==== init");
     js_init.call(store)?;
     js_send_pin_watch_event.call(store, BTN1 as i32)?;
     js_handle_io(store, &instance)?;
@@ -277,9 +280,9 @@ fn main() -> anyhow::Result<()> {
     js_push_string(store, &instance, b"console.log(17);LED1.set()\n")?;
 
     for step in 0..10 {
-        println!("==== step {step}");
+        info!("==== step {step}");
         let ret = js_idle.call(store)?;
-        println!("-> {ret:?}");
+        info!("-> {ret:?}");
         js_handle_io(store, &instance)?;
     }
 
