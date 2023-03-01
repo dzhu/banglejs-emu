@@ -1,15 +1,17 @@
 use std::{
     borrow::Borrow,
     env, fs,
-    ops::{Deref, DerefMut},
+    ops::DerefMut,
+    path::Path,
     sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use base64::{engine::general_purpose, Engine};
 use log::{debug, info, trace};
 use wasmer::{
-    Extern, Function, FunctionEnv, FunctionType, Instance, Memory, MemoryType, Module, Pages,
-    RuntimeError, Store, Type, TypedFunction, Value,
+    AsStoreMut, Extern, Function, FunctionEnv, FunctionType, Instance, Memory, MemoryType, Module,
+    Pages, RuntimeError, Store, Type, TypedFunction, Value,
 };
 use wasmer_wasi::{import_object_for_all_wasi_versions, WasiState};
 
@@ -36,18 +38,11 @@ fn main() -> anyhow::Result<()> {
 
     let env_name = |s: &str| ("env".to_owned(), s.to_owned());
 
-    #[derive(Clone, Debug)]
-    struct Env {
-        instance: Arc<Mutex<Option<Instance>>>,
-    }
-    let instance_env = FunctionEnv::new(
-        store,
-        Env {
-            instance: Arc::new(Mutex::new(None)),
-        },
-    );
+    let env = FunctionEnv::new(store, ());
 
-    fn js_handle_io(store: &mut Store, instance: &Instance) -> anyhow::Result<()> {
+    let instance_arc: Arc<Mutex<Option<Instance>>> = Arc::new(Mutex::new(None));
+
+    fn js_handle_io(store: &mut impl AsStoreMut, instance: &Instance) -> anyhow::Result<()> {
         let get_device: TypedFunction<(), i32> = instance
             .exports
             .get_typed_function(store, "jshGetDeviceToTransmit")?;
@@ -58,7 +53,6 @@ fn main() -> anyhow::Result<()> {
         loop {
             let device = get_device.call(store)?;
             if device == 0 {
-                println!();
                 break Ok(());
             }
             let ch = char::from_u32(get_char.call(store, device)? as _).unwrap();
@@ -71,19 +65,15 @@ fn main() -> anyhow::Result<()> {
             env_name("jsHandleIO"),
             Extern::Function(Function::new_with_env(
                 store,
-                &instance_env,
+                &env,
                 FunctionType::new([], []),
                 {
-                    let store = Arc::clone(&store_arc);
-                    move |env, _| {
+                    let instance = Arc::clone(&instance_arc);
+                    move |mut env, _| {
                         debug!("jsHandleIO");
-
-                        let instance = env.data().instance.lock().unwrap();
+                        let instance = instance.lock().unwrap();
                         let instance = instance.as_ref().unwrap();
-                        let mut store = store.lock().unwrap();
-                        let store = store.deref_mut();
-
-                        js_handle_io(store, instance).unwrap();
+                        js_handle_io(&mut env, instance).unwrap();
 
                         Ok(vec![])
                     }
@@ -117,7 +107,6 @@ fn main() -> anyhow::Result<()> {
                 FunctionType::new([Type::I32, Type::I32, Type::I32], []),
                 {
                     let flash = Arc::clone(&flash);
-                    let store = Arc::clone(&store_arc);
                     move |env, args| {
                         trace!("hwFlashWritePtr {args:?}");
                         let flash_addr = args[0].unwrap_i32();
@@ -126,10 +115,7 @@ fn main() -> anyhow::Result<()> {
 
                         let mut flash = flash.lock().unwrap();
                         let dst = &mut flash[flash_addr as usize..][..len as usize];
-                        env.data()
-                            .memory_view(store.lock().unwrap().deref())
-                            .read(base as u64, dst)
-                            .unwrap();
+                        env.data().memory_view(&env).read(base as u64, dst).unwrap();
                         trace!("writing at {flash_addr}: {dst:?}");
                         Ok(vec![])
                     }
@@ -212,7 +198,7 @@ fn main() -> anyhow::Result<()> {
     let instance = Instance::new(store, &module, &import_object)?;
     let memory = instance.exports.get_memory("memory")?;
     wasi_env.data_mut(store).set_memory(memory.clone());
-    *instance_env.as_mut(store).instance.lock().unwrap() = Some(instance.clone());
+    *instance_arc.lock().unwrap() = Some(instance.clone());
 
     let js_init: TypedFunction<(), ()> = instance.exports.get_typed_function(&store, "jsInit")?;
     let js_idle: TypedFunction<(), i32> = instance.exports.get_typed_function(&store, "jsIdle")?;
@@ -266,20 +252,96 @@ fn main() -> anyhow::Result<()> {
         let js_push_char: TypedFunction<(i32, i32), ()> = instance
             .exports
             .get_typed_function(&store, "jshPushIOCharEvent")?;
-        for ch in chars {
+        let js_idle: TypedFunction<(), i32> =
+            instance.exports.get_typed_function(&store, "jsIdle")?;
+
+        for (i, ch) in chars.into_iter().enumerate() {
             js_push_char.call(store, 21, *ch.borrow() as i32)?;
+            if (i + 1) % 40 == 0 {
+                js_handle_io(store, instance)?;
+                js_idle.call(store)?;
+            }
         }
+
         Ok(())
     }
 
     info!("==== init");
     js_init.call(store)?;
     js_send_pin_watch_event.call(store, BTN1 as i32)?;
+
+    js_push_string(store, &instance, b"echo(0);\n")?;
     js_handle_io(store, &instance)?;
 
     js_push_string(store, &instance, b"console.log(17);LED1.set()\n")?;
 
-    for step in 0..10 {
+    fn read_b64<P: AsRef<Path>>(path: P) -> anyhow::Result<String> {
+        Ok(general_purpose::STANDARD_NO_PAD.encode(fs::read(path)?))
+    }
+
+    const BANGLE_APPS: &str = env!("BANGLE_APPS");
+
+    js_push_string(
+        store,
+        &instance,
+        format!(
+            "require('Storage').write('.bootcde', atob('{}'));\n",
+            read_b64(format!("{BANGLE_APPS}/apps/boot/bootloader.js"))?
+        )
+        .bytes(),
+    )?;
+    js_handle_io(store, &instance)?;
+
+    js_push_string(
+        store,
+        &instance,
+        r#"require('Storage').write('antonclk.info', '{"id":"antonclk","name":"Anton Clock","type":"clock","src":"antonclk.app.js","icon":"antonclk.img","version":"0.11","tags":"clock","files":"antonclk.info,antonclk.app.js"}')"#.bytes(),
+    )?;
+    js_handle_io(store, &instance)?;
+
+    js_push_string(
+        store,
+        &instance,
+        format!(
+            "require('Storage').write('antonclk.app.js', atob('{}'));\n",
+            read_b64(format!("{BANGLE_APPS}/apps/antonclk/app.js"))?
+        )
+        .bytes(),
+    )?;
+    js_handle_io(store, &instance)?;
+
+    for step in 0..2 {
+        info!("==== step {step}");
+        let ret = js_idle.call(store)?;
+        info!("-> {ret:?}");
+        js_handle_io(store, &instance)?;
+    }
+
+    draw_screen(store, memory, &js_gfx_get_ptr)?;
+
+    js_push_string(store, &instance, b"load();\n")?;
+    js_handle_io(store, &instance)?;
+    js_idle.call(store)?;
+
+    for i in 0..8 {
+        js_push_string(
+            store,
+            &instance,
+            format!(
+                "g.setColor({},{},{});g.drawWideLine(3, {}, {}, {}, {});\n",
+                i & 1,
+                (i >> 1) & 1,
+                (i >> 2) & 1,
+                20,
+                i * 10,
+                156,
+                i * 10 + 30,
+            )
+            .bytes(),
+        )?;
+    }
+
+    for step in 0..2 {
         info!("==== step {step}");
         let ret = js_idle.call(store)?;
         info!("-> {ret:?}");
