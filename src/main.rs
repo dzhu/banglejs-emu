@@ -1,4 +1,5 @@
 use std::{
+    borrow::Borrow,
     env, fs,
     ops::{Deref, DerefMut},
     sync::{Arc, Mutex},
@@ -245,12 +246,26 @@ fn main() -> anyhow::Result<()> {
         Ok(())
     }
 
+    fn js_push_string<T, B>(store: &mut Store, instance: &Instance, chars: T) -> anyhow::Result<()>
+    where
+        B: Borrow<u8>,
+        T: IntoIterator<Item = B>,
+    {
+        let js_push_char: TypedFunction<(i32, i32), ()> = instance
+            .exports
+            .get_typed_function(&store, "jshPushIOCharEvent")?;
+        for ch in chars {
+            js_push_char.call(store, 21, *ch.borrow() as i32)?;
+        }
+        Ok(())
+    }
+
     println!("==== init");
     js_init.call(store)?;
     js_send_pin_watch_event.call(store, BTN1 as i32)?;
     js_handle_io(store, &instance)?;
 
-    draw_screen(store, memory, js_gfx_get_ptr)?;
+    js_push_string(store, &instance, b"console.log(17);LED1.set()\n")?;
 
     for step in 0..10 {
         println!("==== step {step}");
@@ -258,6 +273,8 @@ fn main() -> anyhow::Result<()> {
         println!("-> {ret:?}");
         js_handle_io(store, &instance)?;
     }
+
+    draw_screen(store, memory, js_gfx_get_ptr)?;
 
     Ok(())
 }
