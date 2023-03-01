@@ -222,24 +222,33 @@ fn main() -> anyhow::Result<()> {
     fn draw_screen(
         store: &mut Store,
         memory: &Memory,
-        get: TypedFunction<i32, i32>,
+        get: &TypedFunction<i32, i32>,
     ) -> anyhow::Result<()> {
-        let mut buf = vec![0u8; 66];
+        let mut buf0 = vec![0u8; 66];
+        let mut buf1 = vec![0u8; 66];
         let memory_view = memory.view(&store);
-        for y in 0..176 {
-            let base = get.call(store, y)?;
-            memory_view.read(base as u64, &mut buf)?;
-            for x in 0..176 {
+        for y in (0..176).step_by(2) {
+            let base0 = get.call(store, y)?;
+            let base1 = get.call(store, y + 1)?;
+            memory_view.read(base0 as u64, &mut buf0)?;
+            memory_view.read(base1 as u64, &mut buf1)?;
+
+            fn get3(x: usize, buf: &[u8]) -> u8 {
                 let bit = x * 3;
                 let byte = bit >> 3;
-                let c = ((buf[byte] >> (bit & 7))
+                ((buf[byte] >> (bit & 7))
                     | if (bit & 7) <= 5 {
                         0
                     } else {
                         buf[byte + 1] << (8 - (bit & 7))
                     })
-                    & 7;
-                print!("\x1b[{}m ", 40 + c);
+                    & 7
+            }
+
+            for x in 0..176 {
+                let c0 = get3(x, &buf0);
+                let c1 = get3(x, &buf1);
+                print!("\x1b[{};{}m\u{2584}", 40 + c0, 30 + c1);
             }
             println!("\x1b[m");
         }
@@ -274,7 +283,7 @@ fn main() -> anyhow::Result<()> {
         js_handle_io(store, &instance)?;
     }
 
-    draw_screen(store, memory, js_gfx_get_ptr)?;
+    draw_screen(store, memory, &js_gfx_get_ptr)?;
 
     Ok(())
 }
