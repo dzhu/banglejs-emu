@@ -10,37 +10,44 @@ use std::{
 use base64::{engine::general_purpose, Engine};
 use log::{debug, info, trace};
 use wasmer::{
-    AsStoreMut, Extern, Function, FunctionEnv, FunctionType, Instance, Memory, MemoryType, Module,
-    Pages, RuntimeError, Store, Type, TypedFunction, Value,
+    AsStoreMut, AsStoreRef, ExportError, Extern, Function, FunctionEnv, FunctionType, Instance,
+    Memory, MemoryType, Module, Pages, RuntimeError, Store, Type, TypedFunction, Value,
 };
 use wasmer_wasi::{import_object_for_all_wasi_versions, WasiState};
 
-const BTN1: usize = 17;
+const BTN1: i32 = 17;
+
+struct ModuleFuncs {
+    get_gfx_ptr: TypedFunction<i32, i32>,
+    js_idle: TypedFunction<(), i32>,
+    js_init: TypedFunction<(), ()>,
+    js_push_char: TypedFunction<(i32, i32), ()>,
+    js_send_pin_watch_event: TypedFunction<i32, ()>,
+}
+
+impl ModuleFuncs {
+    fn new(store: &impl AsStoreRef, instance: &Instance) -> Result<Self, ExportError> {
+        Ok(Self {
+            get_gfx_ptr: instance.exports.get_typed_function(store, "jsGfxGetPtr")?,
+            js_idle: instance.exports.get_typed_function(store, "jsIdle")?,
+            js_init: instance.exports.get_typed_function(store, "jsInit")?,
+            js_push_char: instance
+                .exports
+                .get_typed_function(store, "jshPushIOCharEvent")?,
+            js_send_pin_watch_event: instance
+                .exports
+                .get_typed_function(store, "jsSendPinWatchEvent")?,
+        })
+    }
+}
 
 struct Emulator {
     store: Arc<Mutex<Store>>,
     instance: Arc<Mutex<Option<Instance>>>,
+    module_funcs: ModuleFuncs,
 }
 
 impl Emulator {
-    fn js_handle_io(store: &mut impl AsStoreMut, instance: &Instance) -> anyhow::Result<()> {
-        let get_device: TypedFunction<(), i32> = instance
-            .exports
-            .get_typed_function(store, "jshGetDeviceToTransmit")?;
-        let get_char: TypedFunction<i32, i32> = instance
-            .exports
-            .get_typed_function(store, "jshGetCharToTransmit")?;
-
-        loop {
-            let device = get_device.call(store)?;
-            if device == 0 {
-                break Ok(());
-            }
-            let ch = char::from_u32(get_char.call(store, device)? as _).unwrap();
-            print!("{ch}");
-        }
-    }
-
     fn new<P: AsRef<Path>>(path: P) -> anyhow::Result<Self> {
         let wasm_bytes = fs::read(path)?;
         let store_arc = Arc::new(Mutex::new(Store::default()));
@@ -56,7 +63,7 @@ impl Emulator {
         let flash = Arc::new(Mutex::new(vec![255u8; 1 << 23]));
         let pins = Arc::new(Mutex::new(vec![false; 48]));
 
-        pins.lock().unwrap()[BTN1] = true;
+        pins.lock().unwrap()[BTN1 as usize] = true;
 
         let env_name = |s: &str| ("env".to_owned(), s.to_owned());
 
@@ -204,12 +211,33 @@ impl Emulator {
         wasi_env.data_mut(store).set_memory(memory.clone());
         *instance_arc.lock().unwrap() = Some(instance.clone());
 
+        let module_funcs = ModuleFuncs::new(store, &instance)?;
+
         drop(store_guard);
 
         Ok(Self {
             store: store_arc,
             instance: instance_arc,
+            module_funcs,
         })
+    }
+
+    fn js_handle_io(store: &mut impl AsStoreMut, instance: &Instance) -> anyhow::Result<()> {
+        let get_device: TypedFunction<(), i32> = instance
+            .exports
+            .get_typed_function(store, "jshGetDeviceToTransmit")?;
+        let get_char: TypedFunction<i32, i32> = instance
+            .exports
+            .get_typed_function(store, "jshGetCharToTransmit")?;
+
+        loop {
+            let device = get_device.call(store)?;
+            if device == 0 {
+                break Ok(());
+            }
+            let ch = char::from_u32(get_char.call(store, device)? as _).unwrap();
+            print!("{ch}");
+        }
     }
 
     fn run<T, F>(&self, f: F) -> T
@@ -227,18 +255,14 @@ impl Emulator {
 
     fn init(&self) -> anyhow::Result<()> {
         self.run(|store, instance| {
-            let js_init: TypedFunction<(), ()> =
-                instance.exports.get_typed_function(store, "jsInit")?;
-            Ok(js_init.call(store)?)
+            self.module_funcs.js_init.call(store)?;
+            Self::js_handle_io(store, instance)?;
+            Ok(())
         })
     }
 
     fn idle(&self) -> anyhow::Result<i32> {
-        self.run(|store, instance| {
-            let js_idle: TypedFunction<(), i32> =
-                instance.exports.get_typed_function(&store, "jsIdle")?;
-            Ok(js_idle.call(store)?)
-        })
+        self.run(|store, _instance| Ok(self.module_funcs.js_idle.call(store)?))
     }
 
     fn handle_io(&self) -> anyhow::Result<()> {
@@ -249,15 +273,12 @@ impl Emulator {
         self.run(|store, instance| {
             let memory = instance.exports.get_memory("memory")?;
 
-            let get: TypedFunction<i32, i32> =
-                instance.exports.get_typed_function(&store, "jsGfxGetPtr")?;
-
             let mut buf0 = vec![0u8; 66];
             let mut buf1 = vec![0u8; 66];
             let memory_view = memory.view(&store);
             for y in (0..176).step_by(2) {
-                let base0 = get.call(store, y)?;
-                let base1 = get.call(store, y + 1)?;
+                let base0 = self.module_funcs.get_gfx_ptr.call(store, y)?;
+                let base1 = self.module_funcs.get_gfx_ptr.call(store, y + 1)?;
                 memory_view.read(base0 as u64, &mut buf0)?;
                 memory_view.read(base1 as u64, &mut buf1)?;
 
@@ -290,21 +311,23 @@ impl Emulator {
         T: IntoIterator<Item = B>,
     {
         self.run(|store, instance| {
-            let js_push_char: TypedFunction<(i32, i32), ()> = instance
-                .exports
-                .get_typed_function(&store, "jshPushIOCharEvent")?;
-            let js_idle: TypedFunction<(), i32> =
-                instance.exports.get_typed_function(&store, "jsIdle")?;
-
             for (i, ch) in chars.into_iter().enumerate() {
-                js_push_char.call(store, 21, *ch.borrow() as i32)?;
+                self.module_funcs
+                    .js_push_char
+                    .call(store, 21, *ch.borrow() as i32)?;
                 if (i + 1) % 40 == 0 {
                     Self::js_handle_io(store, instance)?;
-                    js_idle.call(store)?;
+                    self.module_funcs.js_idle.call(store)?;
                 }
             }
 
             Ok(())
+        })
+    }
+
+    fn send_pin_watch_event(&self, pin: i32) -> anyhow::Result<()> {
+        self.run(|store, _instance| {
+            Ok(self.module_funcs.js_send_pin_watch_event.call(store, pin)?)
         })
     }
 }
@@ -314,14 +337,9 @@ fn main() -> anyhow::Result<()> {
 
     let emu = Emulator::new(env::args().nth(1).unwrap())?;
 
-    // let js_send_pin_watch_event: TypedFunction<i32, ()> = instance
-    //     .exports
-    //     .get_typed_function(&store, "jsSendPinWatchEvent")?;
-
     info!("==== init");
     emu.init()?;
-
-    // js_send_pin_watch_event.call(store, BTN1 as i32)?;
+    emu.send_pin_watch_event(BTN1)?;
 
     emu.push_string(b"echo(0);\n")?;
     emu.handle_io()?;
