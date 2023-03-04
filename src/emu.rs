@@ -12,7 +12,7 @@ use wasmtime::{AsContextMut, Caller, Engine, Instance, Linker, Module, Store, Ty
 
 pub const BTN1: i32 = 17;
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, Eq, PartialEq)]
 pub struct Color(u8);
 
 impl Color {
@@ -27,9 +27,13 @@ impl Color {
     pub fn bg(&self) -> u8 {
         40 + self.0
     }
+
+    pub fn rgb(&self) -> (bool, bool, bool) {
+        (self.0 & 1 != 0, self.0 & 2 != 0, self.0 & 4 != 0)
+    }
 }
 
-pub struct Screen([[Color; 176]; 176]);
+pub struct Screen(pub [[Color; 176]; 176]);
 
 impl Default for Screen {
     fn default() -> Self {

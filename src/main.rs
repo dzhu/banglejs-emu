@@ -1,100 +1,104 @@
-use std::{env, fs, path::Path, thread, time::Duration};
+use std::{
+    env,
+    fs::{self, File},
+    io,
+    path::Path,
+    time::Duration,
+};
 
 use base64::{engine::general_purpose, Engine};
-use log::info;
+use crossterm::{
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event},
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+};
+use emu::Screen;
+use env_logger::{Builder, Target};
+use tui::{backend::CrosstermBackend, Terminal};
+use tui_screen::TuiScreen;
 
 mod emu;
+mod runner;
+mod tui_screen;
 
 fn main() -> anyhow::Result<()> {
-    env_logger::init();
-
-    let mut emu = emu::Emulator::new(env::args().nth(1).unwrap())?;
-
-    info!("==== init");
-    emu.init()?;
-    emu.send_pin_watch_event(emu::BTN1)?;
-
-    emu.push_string(b"echo(0);\n")?;
-
-    let cb = |ch| print!("{}", ch as char);
-
-    emu.handle_io(cb)?;
-
-    emu.push_string(b"console.log(17);LED1.set()\n")?;
-
     fn read_b64<P: AsRef<Path>>(path: P) -> anyhow::Result<String> {
         Ok(general_purpose::STANDARD_NO_PAD.encode(fs::read(path)?))
     }
 
     const BANGLE_APPS: &str = env!("BANGLE_APPS");
 
-    emu.push_string(
+    Builder::from_default_env()
+        .format_timestamp_micros()
+        .target(Target::Pipe(Box::new(
+            File::create("/tmp/emu.log").expect("Can't create file"),
+        )))
+        .init();
+
+    // Set up emulator.
+    let emu = runner::ThreadRunner::new(env::args().nth(1).unwrap())?;
+
+    let (input_tx, input_rx) = crossbeam_channel::unbounded();
+    let (output_tx, output_rx) = crossbeam_channel::unbounded();
+
+    emu.start(input_rx, output_tx);
+
+    // Set up terminal.
+    enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+
+    // Run UI loop.
+    for s in [
         format!(
             "require('Storage').write('.bootcde', atob('{}'));\n",
             read_b64(format!("{BANGLE_APPS}/apps/boot/bootloader.js"))?
         )
-        .bytes(),
-    )?;
-    emu.handle_io(cb)?;
-
-    emu.push_string(
-        r#"require('Storage').write('antonclk.info', '{"id":"antonclk","name":"Anton Clock","type":"clock","src":"antonclk.app.js","icon":"antonclk.img","version":"0.11","tags":"clock","files":"antonclk.info,antonclk.app.js"}')"#.bytes(),
-    )?;
-    emu.handle_io(cb)?;
-
-    emu.push_string(
+        .into_bytes(),
+        r#"require('Storage').write('antonclk.info', '{"type":"clock","src":"antonclk.app.js"}')"#
+            .to_owned()
+            .into_bytes(),
         format!(
-            "require('Storage').write('antonclk.app.js', atob('{}'));\n",
+            "require('Storage').write('antonclk.app.js', atob('{}'));load()\n",
             read_b64(format!("{BANGLE_APPS}/apps/antonclk/app.js"))?
         )
-        .bytes(),
-    )?;
-    emu.handle_io(cb)?;
-
-    for step in 0..2 {
-        info!("==== step {step}");
-        let ret = emu.idle()?;
-        info!("-> {ret:?}");
-        emu.handle_io(cb)?;
+        .into_bytes(),
+        b"var x=0;function tick(){g.setColor(1,0,1);g.drawLine(x%176,0,x%176,16);x++;setTimeout(tick,341);};setTimeout(tick,0);\n".to_vec(),
+    ] {
+        for ch in s {
+            input_tx.send(ch).unwrap();
+        }
     }
-
-    println!("{}", emu.get_screen()?);
-
-    emu.push_string(b"load();\n")?;
-    emu.handle_io(cb)?;
-    emu.idle()?;
-
-    for i in 0..8 {
-        emu.push_string(
-            format!(
-                "g.setColor({},{},{});g.drawWideLine(3, {}, {}, {}, {});\n",
-                i & 1,
-                (i >> 1) & 1,
-                (i >> 2) & 1,
-                20,
-                i * 10,
-                156,
-                i * 10 + 30,
-            )
-            .bytes(),
-        )?;
-    }
-
-    println!("{}", emu.get_screen()?);
-
-    emu.push_string(b"console.log('timeout1'); LED1.set();\n")?;
-    emu.push_string(b"console.log(g.drawWideLine, g.vecDraw, g.test, g.test2)")?;
-    emu.push_string(b"setTimeout(function() { console.log('timeout2'); LED1.reset(); }, 0);\n")?;
-    emu.handle_io(cb)?;
 
     loop {
-        let ret = emu.idle()?;
-        info!("idle -> {ret:?}");
-        if emu.gfx_changed()? {
-            info!("gfx changed");
-            println!("{}", emu.get_screen()?);
+        let screen: Box<Screen>;
+        if let Ok(output) = output_rx.try_recv() {
+            if let runner::Output::Screen(s) = output {
+                screen = s;
+
+                terminal.draw(|f| {
+                    let size = f.size();
+                    let block = TuiScreen::new(&screen);
+                    f.render_widget(block, size);
+                })?;
+            }
+        } else if let Ok(true) = event::poll(Duration::from_millis(10)) {
+            if let Event::Key(_) = event::read().unwrap() {
+                break;
+            }
         }
-        emu.handle_io(cb)?;
-        thread::sleep(Duration::from_millis(20));
     }
+
+    // Restore terminal.
+    disable_raw_mode()?;
+    execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    )?;
+    terminal.show_cursor()?;
+
+    Ok(())
 }
