@@ -65,7 +65,6 @@ fn main() -> anyhow::Result<()> {
             read_b64(format!("{BANGLE_APPS}/apps/antonclk/app.js"))?
         )
         .into_bytes(),
-        b"var x=0;function tick(){g.setColor(1,0,1);g.drawLine(x%176,0,x%176,16);x++;setTimeout(tick,341);};setTimeout(tick,0);\n".to_vec(),
     ] {
         for ch in s {
             input_tx.send(ch).unwrap();
