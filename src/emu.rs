@@ -1,5 +1,6 @@
 use std::{
     borrow::Borrow,
+    collections::VecDeque,
     mem,
     path::Path,
     time::{SystemTime, UNIX_EPOCH},
@@ -13,6 +14,7 @@ pub const BTN1: i32 = 17;
 struct State {
     pins: Vec<bool>,
     flash: Vec<u8>,
+    char_q: VecDeque<u8>,
     instance: Option<Instance>,
 }
 
@@ -25,6 +27,7 @@ impl State {
             pins,
             flash: vec![255u8; 1 << 23],
             instance: None,
+            char_q: VecDeque::new(),
         }
     }
 }
@@ -52,7 +55,9 @@ impl Emulator {
 
         linker.func_wrap("env", "jsHandleIO", |mut caller: Caller<'_, State>| {
             let instance = caller.data().instance.unwrap();
-            Self::js_handle_io(&mut caller, &instance).unwrap();
+            let mut char_q = mem::take(&mut caller.data_mut().char_q);
+            Self::js_handle_io(&mut caller, &instance, |ch| char_q.push_back(ch)).unwrap();
+            caller.data_mut().char_q = char_q;
         })?;
 
         linker.func_wrap(
@@ -127,9 +132,7 @@ impl Emulator {
     }
 
     pub fn init(&mut self) -> anyhow::Result<()> {
-        self.funcs.js_init.call(&mut self.store, ())?;
-        Self::js_handle_io(&mut self.store, &self.instance)?;
-        Ok(())
+        self.funcs.js_init.call(&mut self.store, ())
     }
 
     pub fn idle(&mut self) -> anyhow::Result<i32> {
@@ -143,6 +146,7 @@ impl Emulator {
     fn js_handle_io(
         context: &mut impl AsContextMut<Data = State>,
         instance: &Instance,
+        mut cb: impl FnMut(u8),
     ) -> anyhow::Result<()> {
         trace!("jsHandleIO");
         let mut context = context.as_context_mut();
@@ -155,13 +159,20 @@ impl Emulator {
             if device == 0 {
                 break Ok(());
             }
-            let ch = char::from_u32(get_char.call(&mut context, device).unwrap() as _).unwrap();
-            print!("{ch}");
+            let ch = get_char.call(&mut context, device)?;
+            if let Ok(ch) = ch.try_into() {
+                cb(ch);
+            } else {
+                return Ok(());
+            }
         }
     }
 
-    pub fn handle_io(&mut self) -> anyhow::Result<()> {
-        Self::js_handle_io(&mut self.store, &self.instance)?;
+    pub fn handle_io(&mut self, mut cb: impl FnMut(u8)) -> anyhow::Result<()> {
+        for ch in mem::take(&mut self.store.data_mut().char_q) {
+            cb(ch);
+        }
+        Self::js_handle_io(&mut self.store, &self.instance, cb)?;
         Ok(())
     }
 

@@ -15,7 +15,10 @@ fn main() -> anyhow::Result<()> {
     emu.send_pin_watch_event(emu::BTN1)?;
 
     emu.push_string(b"echo(0);\n")?;
-    emu.handle_io()?;
+
+    let cb = |ch| print!("{}", ch as char);
+
+    emu.handle_io(cb)?;
 
     emu.push_string(b"console.log(17);LED1.set()\n")?;
 
@@ -32,12 +35,12 @@ fn main() -> anyhow::Result<()> {
         )
         .bytes(),
     )?;
-    emu.handle_io()?;
+    emu.handle_io(cb)?;
 
     emu.push_string(
         r#"require('Storage').write('antonclk.info', '{"id":"antonclk","name":"Anton Clock","type":"clock","src":"antonclk.app.js","icon":"antonclk.img","version":"0.11","tags":"clock","files":"antonclk.info,antonclk.app.js"}')"#.bytes(),
     )?;
-    emu.handle_io()?;
+    emu.handle_io(cb)?;
 
     emu.push_string(
         format!(
@@ -46,19 +49,19 @@ fn main() -> anyhow::Result<()> {
         )
         .bytes(),
     )?;
-    emu.handle_io()?;
+    emu.handle_io(cb)?;
 
     for step in 0..2 {
         info!("==== step {step}");
         let ret = emu.idle()?;
         info!("-> {ret:?}");
-        emu.handle_io()?;
+        emu.handle_io(cb)?;
     }
 
     emu.draw_screen()?;
 
     emu.push_string(b"load();\n")?;
-    emu.handle_io()?;
+    emu.handle_io(cb)?;
     emu.idle()?;
 
     for i in 0..8 {
@@ -82,7 +85,7 @@ fn main() -> anyhow::Result<()> {
     emu.push_string(b"console.log('timeout1'); LED1.set();\n")?;
     emu.push_string(b"console.log(g.drawWideLine, g.vecDraw, g.test, g.test2)")?;
     emu.push_string(b"setTimeout(function() { console.log('timeout2'); LED1.reset(); }, 0);\n")?;
-    emu.handle_io()?;
+    emu.handle_io(cb)?;
 
     loop {
         let ret = emu.idle()?;
@@ -91,7 +94,7 @@ fn main() -> anyhow::Result<()> {
             info!("gfx changed");
             emu.draw_screen()?;
         }
-        emu.handle_io()?;
+        emu.handle_io(cb)?;
         thread::sleep(Duration::from_millis(20));
     }
 }
