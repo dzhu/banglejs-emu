@@ -1,6 +1,7 @@
 use std::{
     borrow::Borrow,
     collections::VecDeque,
+    fmt::Display,
     mem,
     path::Path,
     time::{SystemTime, UNIX_EPOCH},
@@ -10,6 +11,48 @@ use log::{debug, trace};
 use wasmtime::{AsContextMut, Caller, Engine, Instance, Linker, Module, Store, TypedFunc};
 
 pub const BTN1: i32 = 17;
+
+#[derive(Clone, Copy, Default)]
+pub struct Color(u8);
+
+impl Color {
+    pub fn new(val: u8) -> Self {
+        Self(val & 7)
+    }
+
+    pub fn fg(&self) -> u8 {
+        30 + self.0
+    }
+
+    pub fn bg(&self) -> u8 {
+        40 + self.0
+    }
+}
+
+pub struct Screen([[Color; 176]; 176]);
+
+impl Default for Screen {
+    fn default() -> Self {
+        Self([[Default::default(); 176]; 176])
+    }
+}
+
+impl Display for Screen {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for y in (0..176).step_by(2) {
+            for x in 0..176 {
+                write!(
+                    f,
+                    "\x1b[{};{}m\u{2584}",
+                    self.0[y][x].bg(),
+                    self.0[y + 1][x].fg()
+                )?;
+            }
+            writeln!(f, "\x1b[m")?;
+        }
+        Ok(())
+    }
+}
 
 struct State {
     pins: Vec<bool>,
@@ -176,20 +219,19 @@ impl Emulator {
         Ok(())
     }
 
-    pub fn draw_screen(&mut self) -> anyhow::Result<()> {
+    pub fn get_screen(&mut self) -> anyhow::Result<Screen> {
         let memory = self
             .instance
             .get_memory(&mut self.store, "memory")
             .ok_or(anyhow::format_err!("failed to find `memory` export"))?;
 
-        let mut buf0 = vec![0u8; 66];
-        let mut buf1 = vec![0u8; 66];
+        let mut screen = Screen::default();
 
-        for y in (0..176).step_by(2) {
-            let base0 = self.funcs.get_gfx_ptr.call(&mut self.store, y)?;
-            let base1 = self.funcs.get_gfx_ptr.call(&mut self.store, y + 1)?;
-            memory.read(&self.store, base0 as usize, &mut buf0)?;
-            memory.read(&self.store, base1 as usize, &mut buf1)?;
+        let mut buf = vec![0u8; 66];
+
+        for y in 0..176 {
+            let base = self.funcs.get_gfx_ptr.call(&mut self.store, y as i32)?;
+            memory.read(&self.store, base as usize, &mut buf)?;
 
             fn get3(x: usize, buf: &[u8]) -> u8 {
                 let bit = x * 3;
@@ -204,13 +246,10 @@ impl Emulator {
             }
 
             for x in 0..176 {
-                let c0 = get3(x, &buf0);
-                let c1 = get3(x, &buf1);
-                print!("\x1b[{};{}m\u{2584}", 40 + c0, 30 + c1);
+                screen.0[y][x] = Color::new(get3(x, &buf));
             }
-            println!("\x1b[m");
         }
-        Ok(())
+        Ok(screen)
     }
 
     pub fn push_string<T, B>(&mut self, chars: T) -> anyhow::Result<()>

@@ -58,7 +58,7 @@ fn main() -> anyhow::Result<()> {
         emu.handle_io(cb)?;
     }
 
-    emu.draw_screen()?;
+    println!("{}", emu.get_screen()?);
 
     emu.push_string(b"load();\n")?;
     emu.handle_io(cb)?;
@@ -80,7 +80,7 @@ fn main() -> anyhow::Result<()> {
         )?;
     }
 
-    emu.draw_screen()?;
+    println!("{}", emu.get_screen()?);
 
     emu.push_string(b"console.log('timeout1'); LED1.set();\n")?;
     emu.push_string(b"console.log(g.drawWideLine, g.vecDraw, g.test, g.test2)")?;
@@ -92,7 +92,7 @@ fn main() -> anyhow::Result<()> {
         info!("idle -> {ret:?}");
         if emu.gfx_changed()? {
             info!("gfx changed");
-            emu.draw_screen()?;
+            println!("{}", emu.get_screen()?);
         }
         emu.handle_io(cb)?;
         thread::sleep(Duration::from_millis(20));
