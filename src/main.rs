@@ -101,24 +101,25 @@ fn main() -> anyhow::Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     // Run UI loop.
+    let send_string = move |s: &[u8]| {
+        for &ch in s {
+            input_tx.send(ch).unwrap();
+        }
+    };
+
     for s in [
         format!(
             "require('Storage').write('.bootcde', atob('{}'));\n",
             read_b64(format!("{BANGLE_APPS}/apps/boot/bootloader.js"))?
-        )
-        .into_bytes(),
+        ),
         r#"require('Storage').write('antonclk.info', '{"type":"clock","src":"antonclk.app.js"}')"#
-            .to_owned()
-            .into_bytes(),
+            .to_owned(),
         format!(
             "require('Storage').write('antonclk.app.js', atob('{}'));load()\n",
             read_b64(format!("{BANGLE_APPS}/apps/antonclk/app.js"))?
-        )
-        .into_bytes(),
+        ),
     ] {
-        for ch in s {
-            input_tx.send(ch).unwrap();
-        }
+        send_string(s.as_bytes());
     }
 
     loop {
@@ -137,8 +138,16 @@ fn main() -> anyhow::Result<()> {
                 runner::Output::Console(c) => console_tx.send(c).unwrap(),
             }
         } else if let Ok(true) = event::poll(Duration::from_millis(10)) {
-            if let Event::Key(_) = event::read().unwrap() {
-                break;
+            if let Event::Key(k) = event::read().unwrap() {
+                use event::KeyCode::*;
+                match k.code {
+                    Left => send_string(b"\x10Bangle.emit('swipe', -1, 0);\n"),
+                    Right => send_string(b"\x10Bangle.emit('swipe', 1, 0);\n"),
+                    Up => send_string(b"\x10Bangle.emit('swipe', 0, -1);\n"),
+                    Down => send_string(b"\x10Bangle.emit('swipe', 0, 1);\n"),
+                    Char('q') | Esc => break,
+                    _ => {}
+                }
             }
         }
     }
