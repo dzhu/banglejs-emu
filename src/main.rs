@@ -4,7 +4,8 @@ use std::{
     ops::DerefMut,
     path::Path,
     sync::{Arc, Mutex},
-    time::{SystemTime, UNIX_EPOCH},
+    thread,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use base64::{engine::general_purpose, Engine};
@@ -19,6 +20,7 @@ const BTN1: i32 = 17;
 
 struct ModuleFuncs {
     get_gfx_ptr: TypedFunction<i32, i32>,
+    js_gfx_changed: TypedFunction<(), i32>,
     js_idle: TypedFunction<(), i32>,
     js_init: TypedFunction<(), ()>,
     js_push_char: TypedFunction<(i32, i32), ()>,
@@ -29,6 +31,7 @@ impl ModuleFuncs {
     fn new(store: &impl AsStoreRef, instance: &Instance) -> Result<Self, ExportError> {
         Ok(Self {
             get_gfx_ptr: instance.exports.get_typed_function(store, "jsGfxGetPtr")?,
+            js_gfx_changed: instance.exports.get_typed_function(store, "jsGfxChanged")?,
             js_idle: instance.exports.get_typed_function(store, "jsIdle")?,
             js_init: instance.exports.get_typed_function(store, "jsInit")?,
             js_push_char: instance
@@ -265,6 +268,10 @@ impl Emulator {
         self.run(|store, _instance| Ok(self.module_funcs.js_idle.call(store)?))
     }
 
+    fn gfx_changed(&self) -> anyhow::Result<bool> {
+        self.run(|store, _instance| Ok(self.module_funcs.js_gfx_changed.call(store)? != 0))
+    }
+
     fn handle_io(&self) -> anyhow::Result<()> {
         self.run(|store, instance| Self::js_handle_io(store, instance))
     }
@@ -404,14 +411,21 @@ fn main() -> anyhow::Result<()> {
         )?;
     }
 
-    for step in 0..2 {
-        info!("==== step {step}");
-        let ret = emu.idle()?;
-        info!("-> {ret:?}");
-        emu.handle_io()?;
-    }
-
     emu.draw_screen()?;
 
-    Ok(())
+    emu.push_string(b"console.log('timeout1'); LED1.set();\n")?;
+    emu.push_string(b"console.log(g.drawWideLine, g.vecDraw, g.test, g.test2)")?;
+    emu.push_string(b"setTimeout(function() { console.log('timeout2'); LED1.reset(); }, 0);\n")?;
+    emu.handle_io()?;
+
+    loop {
+        let ret = emu.idle()?;
+        info!("idle -> {ret:?}");
+        if emu.gfx_changed()? {
+            info!("gfx changed");
+            emu.draw_screen()?;
+        }
+        emu.handle_io()?;
+        thread::sleep(Duration::from_millis(20));
+    }
 }
