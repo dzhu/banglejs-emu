@@ -1,8 +1,10 @@
 use std::{
     env,
     fs::{self, File},
-    io,
+    io::{self, Read, Write},
+    net::TcpListener,
     path::Path,
+    thread,
     time::Duration,
 };
 
@@ -14,6 +16,7 @@ use crossterm::{
 };
 use emu::Screen;
 use env_logger::{Builder, Target};
+use log::{debug, error, info};
 use tui::{backend::CrosstermBackend, Terminal};
 use tui_screen::TuiScreen;
 
@@ -41,7 +44,54 @@ fn main() -> anyhow::Result<()> {
     let (input_tx, input_rx) = crossbeam_channel::unbounded();
     let (output_tx, output_rx) = crossbeam_channel::unbounded();
 
+    let (console_tx, console_rx) = crossbeam_channel::unbounded();
+
     emu.start(input_rx, output_tx);
+
+    // Run network thread.
+    let listener = TcpListener::bind("127.0.0.1:37026")?;
+    thread::spawn({
+        let input_tx = input_tx.clone();
+        move || loop {
+            listener.set_nonblocking(true).unwrap();
+            loop {
+                let Ok((mut sock, addr)) = listener.accept() else {
+                while console_rx.recv_timeout(Duration::from_millis(50)).is_ok() {}
+                continue;
+            };
+                info!("got connection from {addr}");
+                let mut buf = vec![0u8; 4096];
+                sock.set_read_timeout(Some(Duration::from_millis(50)))
+                    .unwrap();
+                loop {
+                    let r = sock.read(&mut buf);
+                    debug!("sock read: {r:?}");
+                    match r {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            for &c in &buf[..n] {
+                                input_tx.send(c).unwrap();
+                            }
+                        }
+                        Err(err) => match err.kind() {
+                            io::ErrorKind::WouldBlock => {
+                                while let Ok(data) =
+                                    console_rx.recv_timeout(Duration::from_millis(50))
+                                {
+                                    sock.write_all(&[data]).unwrap();
+                                }
+                            }
+                            io::ErrorKind::NotConnected => break,
+                            x => {
+                                error!("unexpected socket err: {x}");
+                                break;
+                            }
+                        },
+                    }
+                }
+            }
+        }
+    });
 
     // Set up terminal.
     enable_raw_mode()?;
@@ -74,14 +124,17 @@ fn main() -> anyhow::Result<()> {
     loop {
         let screen: Box<Screen>;
         if let Ok(output) = output_rx.try_recv() {
-            if let runner::Output::Screen(s) = output {
-                screen = s;
+            match output {
+                runner::Output::Screen(s) => {
+                    screen = s;
 
-                terminal.draw(|f| {
-                    let size = f.size();
-                    let block = TuiScreen::new(&screen);
-                    f.render_widget(block, size);
-                })?;
+                    terminal.draw(|f| {
+                        let size = f.size();
+                        let block = TuiScreen::new(&screen);
+                        f.render_widget(block, size);
+                    })?;
+                }
+                runner::Output::Console(c) => console_tx.send(c).unwrap(),
             }
         } else if let Ok(true) = event::poll(Duration::from_millis(10)) {
             if let Event::Key(_) = event::read().unwrap() {
