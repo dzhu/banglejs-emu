@@ -1,14 +1,15 @@
 use std::{
-    env,
+    collections::HashMap,
     fs::{self, File},
     io::{self, Read, Write},
     net::TcpListener,
-    path::Path,
+    path::{Path, PathBuf},
     thread,
     time::Duration,
 };
 
 use base64::{engine::general_purpose, Engine};
+use clap::Parser;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event},
     execute,
@@ -17,6 +18,7 @@ use crossterm::{
 use emu::Screen;
 use env_logger::{Builder, Target};
 use log::{debug, error, info};
+use serde_derive::Deserialize;
 use tui::{backend::CrosstermBackend, Terminal};
 use tui_screen::TuiScreen;
 
@@ -24,12 +26,45 @@ mod emu;
 mod runner;
 mod tui_screen;
 
-fn main() -> anyhow::Result<()> {
-    fn read_b64<P: AsRef<Path>>(path: P) -> anyhow::Result<String> {
-        Ok(general_purpose::STANDARD_NO_PAD.encode(fs::read(path)?))
-    }
+#[derive(Clone, Debug, Deserialize)]
+enum FileContents {
+    #[serde(rename = "path")]
+    Path(PathBuf),
+    #[serde(rename = "contents")]
+    Contents(String),
+}
 
-    const BANGLE_APPS: &str = env!("BANGLE_APPS");
+#[derive(Clone, Debug, Deserialize)]
+struct Config {
+    #[serde(default)]
+    storage: HashMap<String, FileContents>,
+    startup: Option<String>,
+}
+
+impl Config {
+    fn read<P: AsRef<Path>>(path: P) -> anyhow::Result<Self> {
+        let mut f = File::open(path)?;
+        let mut buf = String::new();
+        f.read_to_string(&mut buf)?;
+        let config: Config = toml::from_str(&buf)?;
+        Ok(config)
+    }
+}
+
+#[derive(Debug, Parser)]
+struct Args {
+    #[arg(short = 'b')]
+    bind: Option<String>,
+
+    config_path: PathBuf,
+
+    wasm_path: PathBuf,
+}
+
+fn main() -> anyhow::Result<()> {
+    let args = Args::parse();
+
+    let config = Config::read(&args.config_path)?;
 
     Builder::from_default_env()
         .format_timestamp_micros()
@@ -39,7 +74,7 @@ fn main() -> anyhow::Result<()> {
         .init();
 
     // Set up emulator.
-    let emu = runner::ThreadRunner::new(env::args().nth(1).unwrap())?;
+    let emu = runner::ThreadRunner::new(&args.wasm_path)?;
 
     let (input_tx, input_rx) = crossbeam_channel::unbounded();
     let (output_tx, output_rx) = crossbeam_channel::unbounded();
@@ -49,8 +84,8 @@ fn main() -> anyhow::Result<()> {
     emu.start(input_rx, output_tx);
 
     // Run network thread.
-    let listener = TcpListener::bind("127.0.0.1:37026")?;
     thread::spawn({
+        let listener = TcpListener::bind(args.bind.as_deref().unwrap_or("127.0.0.1:37026"))?;
         let input_tx = input_tx.clone();
         move || loop {
             listener.set_nonblocking(true).unwrap();
@@ -106,19 +141,26 @@ fn main() -> anyhow::Result<()> {
             input_tx.send(ch).unwrap();
         }
     };
+    fn b64(b: &[u8]) -> String {
+        general_purpose::STANDARD_NO_PAD.encode(b)
+    }
 
-    for s in [
-        format!(
-            "require('Storage').write('.bootcde', atob('{}'));\n",
-            read_b64(format!("{BANGLE_APPS}/apps/boot/bootloader.js"))?
-        ),
-        r#"require('Storage').write('antonclk.info', '{"type":"clock","src":"antonclk.app.js"}')"#
-            .to_owned(),
-        format!(
-            "require('Storage').write('antonclk.app.js', atob('{}'));load()\n",
-            read_b64(format!("{BANGLE_APPS}/apps/antonclk/app.js"))?
-        ),
-    ] {
+    for (path, contents) in &config.storage {
+        let contents = match contents {
+            FileContents::Path(p) => fs::read(p)?,
+            FileContents::Contents(s) => s.clone().into_bytes(),
+        };
+        send_string(
+            format!(
+                "\x10require('Storage').write(atob('{}'), atob('{}'));\n",
+                b64(path.as_bytes()),
+                b64(&contents)
+            )
+            .as_bytes(),
+        )
+    }
+
+    if let Some(s) = &config.startup {
         send_string(s.as_bytes());
     }
 

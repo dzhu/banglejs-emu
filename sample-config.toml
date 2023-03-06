@@ -1,0 +1,13 @@
+startup = "load();\n"
+
+[storage.".bootcde"]
+path = "../BangleApps/apps/boot/bootloader.js"
+
+[storage."antonclkplus.info"]
+contents = '{"type":"clock","src":"antonclkplus.app.js"}'
+
+[storage."antonclkplus.app.js"]
+path = "../BangleApps/apps/antonclkplus/app.js"
+
+[storage."antonclk.json"]
+contents = '{"secondsMode": "Always", "secondsColoured": true, "secondsWithColon": true}'
