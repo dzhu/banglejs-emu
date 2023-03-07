@@ -16,7 +16,12 @@ use env_logger::{Builder, Target};
 use futures::{future::FutureExt, StreamExt};
 use log::{debug, error, info};
 use serde_derive::Deserialize;
-use tokio::{io::AsyncReadExt, net::TcpListener, select, sync::mpsc};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::{TcpListener, TcpStream},
+    select,
+    sync::mpsc,
+};
 use tui::{
     backend::{Backend, CrosstermBackend},
     terminal::CompletedFrame,
@@ -25,6 +30,7 @@ use tui::{
 use tui_screen::TuiScreen;
 
 mod emu;
+mod option_future;
 mod runner;
 mod tui_screen;
 
@@ -86,51 +92,7 @@ async fn main() -> anyhow::Result<()> {
     let (input_tx, input_rx) = mpsc::unbounded_channel();
     let (output_tx, mut output_rx) = mpsc::unbounded_channel();
 
-    let (console_tx, mut console_rx) = mpsc::unbounded_channel();
-
     tokio::spawn(emu.run(input_rx, output_tx));
-
-    // Run network thread.
-    tokio::spawn({
-        let input_tx = input_tx.clone();
-        async move {
-            let listener = TcpListener::bind(args.bind.as_deref().unwrap_or("127.0.0.1:37026"))
-                .await
-                .unwrap();
-
-            loop {
-                let (mut sock, addr) = loop {
-                    select! {
-                        new_conn = listener.accept() => break new_conn.unwrap(),
-                        _ = console_rx.recv() => {}
-                    }
-                };
-
-                info!("got connection from {addr}");
-                let mut buf = vec![0u8; 4096];
-                loop {
-                    select! {
-                        _ = listener.accept() => {}
-                        r = sock.read(&mut buf) =>{
-                            debug!("sock read: {r:?}");
-                            match r {
-                                Ok(0) => break,
-                                Ok(n) => {
-                                    for &c in &buf[..n] {
-                                        input_tx.send(c).unwrap();
-                                    }
-                                }
-                                Err(err) => {
-                                    error!("unexpected socket err: {err}");
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    });
 
     // Set up terminal.
     enable_raw_mode()?;
@@ -140,7 +102,7 @@ async fn main() -> anyhow::Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     // Run UI loop.
-    let send_string = move |s: &[u8]| {
+    let send_string = |s: &[u8]| {
         for &ch in s {
             input_tx.send(ch).unwrap();
         }
@@ -182,16 +144,58 @@ async fn main() -> anyhow::Result<()> {
 
     let mut events = EventStream::new();
     let mut screen: Option<Screen> = None;
+    let mut socket: Option<TcpStream> = None;
+
+    let listener = TcpListener::bind(args.bind.as_deref().unwrap_or("127.0.0.1:37026"))
+        .await
+        .unwrap();
+    let mut buf = vec![0u8; 4096];
 
     loop {
+        let sock_read: option_future::OptionFuture<_> =
+            socket.as_mut().map(|s| s.read(&mut buf)).into();
         select! {
+            new_conn = listener.accept() => {
+                let (s, addr) = new_conn?;
+                match socket {
+                    Some(_) => {
+                        debug!("ignoring connection from {addr}");
+                    }
+                    None => {
+                        info!("got connection from {addr}");
+                        socket = Some(s);
+                    }
+                }
+            }
+            r = sock_read => {
+                debug!("sock read: {r:?}");
+                match r {
+                    Ok(0) => {
+                        debug!("socket connection closed");
+                        socket = None;
+                    }
+                    Ok(n) => {
+                        for &c in &buf[..n] {
+                            input_tx.send(c).unwrap();
+                        }
+                    }
+                    Err(err) => {
+                        error!("socket err: {err}");
+                        socket = None;
+                    }
+                }
+            }
             output = output_rx.recv() => {
                 match output.unwrap() {
                     Output::Screen(s) => {
                         draw(&mut terminal, &s)?;
                         screen = Some(*s);
                     }
-                    Output::Console(c) => console_tx.send(c).unwrap(),
+                    Output::Console(c) => {
+                        if let Some(socket) = &mut socket {
+                            let _ = socket.write_all(&[c]).await;
+                        }
+                    }
                 }
             }
             ev = events.next().fuse() => {

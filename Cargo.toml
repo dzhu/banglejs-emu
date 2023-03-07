@@ -10,8 +10,10 @@ clap = { version = "4.1.8", features = ["derive"] }
 crossterm = { version = "0.26.1", features = ["event-stream"] }
 env_logger = "0.10.0"
 futures = "0.3.26"
+futures-core = "0.3.26"
 futures-timer = "3.0.2"
 log = "0.4.17"
+pin-project-lite = "0.2.9"
 serde = "1.0.152"
 serde_derive = "1.0.152"
 tokio = { version = "1.26.0", features = ["full"] }
