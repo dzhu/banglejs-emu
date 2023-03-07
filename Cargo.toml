@@ -7,12 +7,14 @@ edition = "2021"
 anyhow = "1.0.69"
 base64 = "0.21.0"
 clap = { version = "4.1.8", features = ["derive"] }
-crossbeam-channel = "0.5.7"
-crossterm = "0.26.1"
+crossterm = { version = "0.26.1", features = ["event-stream"] }
 env_logger = "0.10.0"
+futures = "0.3.26"
+futures-timer = "3.0.2"
 log = "0.4.17"
 serde = "1.0.152"
 serde_derive = "1.0.152"
+tokio = { version = "1.26.0", features = ["full"] }
 toml = "0.7.2"
 tui = "0.19.0"
 wasmtime = "6.0.0"

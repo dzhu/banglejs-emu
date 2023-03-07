@@ -1,23 +1,22 @@
 use std::{
     collections::HashMap,
     fs::{self, File},
-    io::{self, Read, Write},
-    net::TcpListener,
+    io::{self, Read},
     path::{Path, PathBuf},
-    thread,
-    time::Duration,
 };
 
 use base64::{engine::general_purpose, Engine};
 use clap::Parser;
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event},
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, EventStream},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use env_logger::{Builder, Target};
+use futures::{future::FutureExt, StreamExt};
 use log::{debug, error, info};
 use serde_derive::Deserialize;
+use tokio::{io::AsyncReadExt, net::TcpListener, select, sync::mpsc};
 use tui::{
     backend::{Backend, CrosstermBackend},
     terminal::CompletedFrame,
@@ -30,6 +29,8 @@ mod runner;
 mod tui_screen;
 
 use emu::{Output, Screen};
+
+use crate::runner::AsyncRunner;
 
 #[derive(Clone, Debug, Deserialize)]
 enum FileContents {
@@ -66,7 +67,8 @@ struct Args {
     wasm_path: PathBuf,
 }
 
-fn main() -> anyhow::Result<()> {
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
     let config = Config::read(&args.config_path)?;
@@ -79,54 +81,51 @@ fn main() -> anyhow::Result<()> {
         .init();
 
     // Set up emulator.
-    let emu = runner::ThreadRunner::new(&args.wasm_path)?;
+    let emu = AsyncRunner::new(&args.wasm_path)?;
 
-    let (input_tx, input_rx) = crossbeam_channel::unbounded();
-    let (output_tx, output_rx) = crossbeam_channel::unbounded();
+    let (input_tx, input_rx) = mpsc::unbounded_channel();
+    let (output_tx, mut output_rx) = mpsc::unbounded_channel();
 
-    let (console_tx, console_rx) = crossbeam_channel::unbounded();
+    let (console_tx, mut console_rx) = mpsc::unbounded_channel();
 
-    emu.start(input_rx, output_tx);
+    tokio::spawn(emu.run(input_rx, output_tx));
 
     // Run network thread.
-    thread::spawn({
-        let listener = TcpListener::bind(args.bind.as_deref().unwrap_or("127.0.0.1:37026"))?;
+    tokio::spawn({
         let input_tx = input_tx.clone();
-        move || loop {
-            listener.set_nonblocking(true).unwrap();
+        async move {
+            let listener = TcpListener::bind(args.bind.as_deref().unwrap_or("127.0.0.1:37026"))
+                .await
+                .unwrap();
+
             loop {
-                let Ok((mut sock, addr)) = listener.accept() else {
-                while console_rx.recv_timeout(Duration::from_millis(50)).is_ok() {}
-                continue;
-            };
+                let (mut sock, addr) = loop {
+                    select! {
+                        new_conn = listener.accept() => break new_conn.unwrap(),
+                        _ = console_rx.recv() => {}
+                    }
+                };
+
                 info!("got connection from {addr}");
                 let mut buf = vec![0u8; 4096];
-                sock.set_read_timeout(Some(Duration::from_millis(50)))
-                    .unwrap();
                 loop {
-                    let r = sock.read(&mut buf);
-                    debug!("sock read: {r:?}");
-                    match r {
-                        Ok(0) => break,
-                        Ok(n) => {
-                            for &c in &buf[..n] {
-                                input_tx.send(c).unwrap();
-                            }
-                        }
-                        Err(err) => match err.kind() {
-                            io::ErrorKind::WouldBlock => {
-                                while let Ok(data) =
-                                    console_rx.recv_timeout(Duration::from_millis(50))
-                                {
-                                    sock.write_all(&[data]).unwrap();
+                    select! {
+                        _ = listener.accept() => {}
+                        r = sock.read(&mut buf) =>{
+                            debug!("sock read: {r:?}");
+                            match r {
+                                Ok(0) => break,
+                                Ok(n) => {
+                                    for &c in &buf[..n] {
+                                        input_tx.send(c).unwrap();
+                                    }
+                                }
+                                Err(err) => {
+                                    error!("unexpected socket err: {err}");
+                                    break;
                                 }
                             }
-                            io::ErrorKind::NotConnected => break,
-                            x => {
-                                error!("unexpected socket err: {x}");
-                                break;
-                            }
-                        },
+                        }
                     }
                 }
             }
@@ -155,6 +154,7 @@ fn main() -> anyhow::Result<()> {
             FileContents::Path(p) => fs::read(p)?,
             FileContents::Contents(s) => s.clone().into_bytes(),
         };
+        info!("writing {} bytes to {}", contents.len(), path);
         send_string(
             format!(
                 "\x10require('Storage').write(atob('{}'), atob('{}'));\n",
@@ -180,35 +180,41 @@ fn main() -> anyhow::Result<()> {
         })
     }
 
+    let mut events = EventStream::new();
     let mut screen: Option<Screen> = None;
+
     loop {
-        if let Ok(output) = output_rx.try_recv() {
-            match output {
-                Output::Screen(s) => {
-                    draw(&mut terminal, &s)?;
-                    screen = Some(*s);
+        select! {
+            output = output_rx.recv() => {
+                match output.unwrap() {
+                    Output::Screen(s) => {
+                        draw(&mut terminal, &s)?;
+                        screen = Some(*s);
+                    }
+                    Output::Console(c) => console_tx.send(c).unwrap(),
                 }
-                Output::Console(c) => console_tx.send(c).unwrap(),
             }
-        } else if let Ok(true) = event::poll(Duration::from_millis(10)) {
-            match event::read().unwrap() {
-                Event::Key(k) => {
-                    use event::KeyCode::*;
-                    match k.code {
-                        Left => send_string(b"\x10Bangle.emit('swipe', -1, 0);\n"),
-                        Right => send_string(b"\x10Bangle.emit('swipe', 1, 0);\n"),
-                        Up => send_string(b"\x10Bangle.emit('swipe', 0, -1);\n"),
-                        Down => send_string(b"\x10Bangle.emit('swipe', 0, 1);\n"),
-                        Char('q') | Esc => break,
-                        _ => {}
+            ev = events.next().fuse() => {
+                match ev.unwrap().unwrap() {
+                    Event::Key(k) => {
+                        use event::KeyCode::*;
+                        debug!("key: {k:?}");
+                        match k.code {
+                            Left => send_string(b"\x10Bangle.emit('swipe', -1, 0);\n"),
+                            Right => send_string(b"\x10Bangle.emit('swipe', 1, 0);\n"),
+                            Up => send_string(b"\x10Bangle.emit('swipe', 0, -1);\n"),
+                            Down => send_string(b"\x10Bangle.emit('swipe', 0, 1);\n"),
+                            Char('q') | Esc => break,
+                            _ => {}
+                        }
                     }
-                }
-                Event::Resize(..) => {
-                    if let Some(screen) = &screen {
-                        draw(&mut terminal, screen)?;
+                    Event::Resize(..) => {
+                        if let Some(screen) = &screen {
+                            draw(&mut terminal, screen)?;
+                        }
                     }
+                    _ => {}
                 }
-                _ => {}
             }
         }
     }
