@@ -6,15 +6,10 @@ use std::{
 
 use crossbeam_channel::{Receiver, Sender};
 
-use crate::emu::{self, Emulator, Screen};
-
-pub enum Output {
-    Console(u8),
-    Screen(Box<Screen>),
-}
+use crate::emu::{Emulator, Output, BTN1};
 
 pub struct ThreadRunner {
-    emu: emu::Emulator,
+    emu: Emulator,
 }
 
 impl ThreadRunner {
@@ -34,7 +29,7 @@ impl ThreadRunner {
             let cb = |ch| output.send(Output::Console(ch)).unwrap();
 
             emu.init()?;
-            emu.send_pin_watch_event(emu::BTN1)?;
+            emu.send_pin_watch_event(BTN1)?;
             emu.handle_io(cb)?;
 
             loop {

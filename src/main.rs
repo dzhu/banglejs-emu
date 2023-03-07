@@ -15,7 +15,6 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use emu::Screen;
 use env_logger::{Builder, Target};
 use log::{debug, error, info};
 use serde_derive::Deserialize;
@@ -29,6 +28,8 @@ use tui_screen::TuiScreen;
 mod emu;
 mod runner;
 mod tui_screen;
+
+use emu::{Output, Screen};
 
 #[derive(Clone, Debug, Deserialize)]
 enum FileContents {
@@ -183,11 +184,11 @@ fn main() -> anyhow::Result<()> {
     loop {
         if let Ok(output) = output_rx.try_recv() {
             match output {
-                runner::Output::Screen(s) => {
+                Output::Screen(s) => {
                     draw(&mut terminal, &s)?;
                     screen = Some(*s);
                 }
-                runner::Output::Console(c) => console_tx.send(c).unwrap(),
+                Output::Console(c) => console_tx.send(c).unwrap(),
             }
         } else if let Ok(true) = event::poll(Duration::from_millis(10)) {
             match event::read().unwrap() {

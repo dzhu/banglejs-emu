@@ -58,6 +58,11 @@ impl Display for Screen {
     }
 }
 
+pub enum Output {
+    Console(u8),
+    Screen(Box<Screen>),
+}
+
 struct State {
     pins: Vec<bool>,
     flash: Vec<u8>,
