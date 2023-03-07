@@ -19,7 +19,11 @@ use emu::Screen;
 use env_logger::{Builder, Target};
 use log::{debug, error, info};
 use serde_derive::Deserialize;
-use tui::{backend::CrosstermBackend, Terminal};
+use tui::{
+    backend::{Backend, CrosstermBackend},
+    terminal::CompletedFrame,
+    Terminal,
+};
 use tui_screen::TuiScreen;
 
 mod emu;
@@ -164,32 +168,46 @@ fn main() -> anyhow::Result<()> {
         send_string(s.as_bytes());
     }
 
+    fn draw<'a, B: Backend>(
+        terminal: &'a mut Terminal<B>,
+        screen: &Screen,
+    ) -> io::Result<CompletedFrame<'a>> {
+        terminal.draw(|f| {
+            let size = f.size();
+            let block = TuiScreen::new(screen);
+            f.render_widget(block, size);
+        })
+    }
+
+    let mut screen: Option<Screen> = None;
     loop {
-        let screen: Box<Screen>;
         if let Ok(output) = output_rx.try_recv() {
             match output {
                 runner::Output::Screen(s) => {
-                    screen = s;
-
-                    terminal.draw(|f| {
-                        let size = f.size();
-                        let block = TuiScreen::new(&screen);
-                        f.render_widget(block, size);
-                    })?;
+                    draw(&mut terminal, &s)?;
+                    screen = Some(*s);
                 }
                 runner::Output::Console(c) => console_tx.send(c).unwrap(),
             }
         } else if let Ok(true) = event::poll(Duration::from_millis(10)) {
-            if let Event::Key(k) = event::read().unwrap() {
-                use event::KeyCode::*;
-                match k.code {
-                    Left => send_string(b"\x10Bangle.emit('swipe', -1, 0);\n"),
-                    Right => send_string(b"\x10Bangle.emit('swipe', 1, 0);\n"),
-                    Up => send_string(b"\x10Bangle.emit('swipe', 0, -1);\n"),
-                    Down => send_string(b"\x10Bangle.emit('swipe', 0, 1);\n"),
-                    Char('q') | Esc => break,
-                    _ => {}
+            match event::read().unwrap() {
+                Event::Key(k) => {
+                    use event::KeyCode::*;
+                    match k.code {
+                        Left => send_string(b"\x10Bangle.emit('swipe', -1, 0);\n"),
+                        Right => send_string(b"\x10Bangle.emit('swipe', 1, 0);\n"),
+                        Up => send_string(b"\x10Bangle.emit('swipe', 0, -1);\n"),
+                        Down => send_string(b"\x10Bangle.emit('swipe', 0, 1);\n"),
+                        Char('q') | Esc => break,
+                        _ => {}
+                    }
                 }
+                Event::Resize(..) => {
+                    if let Some(screen) = &screen {
+                        draw(&mut terminal, screen)?;
+                    }
+                }
+                _ => {}
             }
         }
     }
