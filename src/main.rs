@@ -102,10 +102,8 @@ async fn main() -> anyhow::Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     // Run UI loop.
-    let send_string = |s: &[u8]| {
-        for &ch in s {
-            input_tx.send(ch).unwrap();
-        }
+    let send_string = |s: Vec<u8>| {
+        input_tx.send(s).unwrap();
     };
     fn b64(b: &[u8]) -> String {
         general_purpose::STANDARD_NO_PAD.encode(b)
@@ -123,12 +121,12 @@ async fn main() -> anyhow::Result<()> {
                 b64(path.as_bytes()),
                 b64(&contents)
             )
-            .as_bytes(),
+            .into_bytes(),
         )
     }
 
     if let Some(s) = &config.startup {
-        send_string(s.as_bytes());
+        send_string(s.clone().into_bytes());
     }
 
     fn draw<'a, B: Backend>(
@@ -175,9 +173,7 @@ async fn main() -> anyhow::Result<()> {
                         socket = None;
                     }
                     Ok(n) => {
-                        for &c in &buf[..n] {
-                            input_tx.send(c).unwrap();
-                        }
+                        input_tx.send(buf[..n].to_owned()).unwrap();
                     }
                     Err(err) => {
                         error!("socket err: {err}");
@@ -191,9 +187,9 @@ async fn main() -> anyhow::Result<()> {
                         draw(&mut terminal, &s)?;
                         screen = Some(*s);
                     }
-                    Output::Console(c) => {
+                    Output::Console(data) => {
                         if let Some(socket) = &mut socket {
-                            let _ = socket.write_all(&[c]).await;
+                            let _ = socket.write_all(&data).await;
                         }
                     }
                 }
@@ -204,10 +200,10 @@ async fn main() -> anyhow::Result<()> {
                         use event::KeyCode::*;
                         debug!("key: {k:?}");
                         match k.code {
-                            Left => send_string(b"\x10Bangle.emit('swipe', -1, 0);\n"),
-                            Right => send_string(b"\x10Bangle.emit('swipe', 1, 0);\n"),
-                            Up => send_string(b"\x10Bangle.emit('swipe', 0, -1);\n"),
-                            Down => send_string(b"\x10Bangle.emit('swipe', 0, 1);\n"),
+                            Left => send_string(b"\x10Bangle.emit('swipe', -1, 0);\n".to_vec()),
+                            Right => send_string(b"\x10Bangle.emit('swipe', 1, 0);\n".to_vec()),
+                            Up => send_string(b"\x10Bangle.emit('swipe', 0, -1);\n".to_vec()),
+                            Down => send_string(b"\x10Bangle.emit('swipe', 0, 1);\n".to_vec()),
                             Char('q') | Esc => break,
                             _ => {}
                         }

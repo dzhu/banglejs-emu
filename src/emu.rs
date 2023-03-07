@@ -1,6 +1,5 @@
 use std::{
     borrow::Borrow,
-    collections::VecDeque,
     fmt::Display,
     mem,
     path::Path,
@@ -59,14 +58,14 @@ impl Display for Screen {
 }
 
 pub enum Output {
-    Console(u8),
+    Console(Vec<u8>),
     Screen(Box<Screen>),
 }
 
 struct State {
     pins: Vec<bool>,
     flash: Vec<u8>,
-    char_q: VecDeque<u8>,
+    char_q: Vec<u8>,
     instance: Option<Instance>,
 }
 
@@ -79,7 +78,7 @@ impl State {
             pins,
             flash: vec![255u8; 1 << 23],
             instance: None,
-            char_q: VecDeque::new(),
+            char_q: vec![],
         }
     }
 }
@@ -108,7 +107,7 @@ impl Emulator {
         linker.func_wrap("env", "jsHandleIO", |mut caller: Caller<'_, State>| {
             let instance = caller.data().instance.unwrap();
             let mut char_q = mem::take(&mut caller.data_mut().char_q);
-            Self::js_handle_io(&mut caller, &instance, |ch| char_q.push_back(ch)).unwrap();
+            Self::js_handle_io(&mut caller, &instance, &mut char_q).unwrap();
             caller.data_mut().char_q = char_q;
         })?;
 
@@ -198,7 +197,7 @@ impl Emulator {
     fn js_handle_io(
         context: &mut impl AsContextMut<Data = State>,
         instance: &Instance,
-        mut cb: impl FnMut(u8),
+        char_q: &mut Vec<u8>,
     ) -> anyhow::Result<()> {
         trace!("jsHandleIO");
         let mut context = context.as_context_mut();
@@ -213,19 +212,17 @@ impl Emulator {
             }
             let ch = get_char.call(&mut context, device)?;
             if let Ok(ch) = ch.try_into() {
-                cb(ch);
+                char_q.push(ch);
             } else {
                 return Ok(());
             }
         }
     }
 
-    pub fn handle_io(&mut self, mut cb: impl FnMut(u8)) -> anyhow::Result<()> {
-        for ch in mem::take(&mut self.store.data_mut().char_q) {
-            cb(ch);
-        }
-        Self::js_handle_io(&mut self.store, &self.instance, cb)?;
-        Ok(())
+    pub fn handle_io(&mut self) -> anyhow::Result<Vec<u8>> {
+        let mut char_q = mem::take(&mut self.store.data_mut().char_q);
+        Self::js_handle_io(&mut self.store, &self.instance, &mut char_q)?;
+        Ok(char_q)
     }
 
     pub fn get_screen(&mut self) -> anyhow::Result<Screen> {
