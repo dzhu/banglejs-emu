@@ -6,7 +6,7 @@ use tokio::{
     sync::mpsc::{UnboundedReceiver, UnboundedSender},
 };
 
-use crate::emu::{Emulator, Output, BTN1};
+use crate::emu::{Emulator, Input, Output, BTN1};
 
 pub struct AsyncRunner {
     emu: Emulator,
@@ -21,7 +21,7 @@ impl AsyncRunner {
 
     pub async fn run(
         self,
-        mut input: UnboundedReceiver<Vec<u8>>,
+        mut input: UnboundedReceiver<Input>,
         output: UnboundedSender<Output>,
     ) -> anyhow::Result<()> {
         let mut emu = self.emu;
@@ -59,7 +59,10 @@ impl AsyncRunner {
                     }
                     s = input.recv() => {
                         if let Some(s) = s {
-                            emu.push_string(&s)?;
+                            match s {
+                                Input::Console(s) => emu.push_string(&s)?,
+                                Input::Touch(x, y, on) => emu.send_touch(x, y, on)?,
+                            }
                         }
                     }
                 }

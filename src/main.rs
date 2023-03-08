@@ -24,7 +24,6 @@ use tokio::{
 };
 use tui::{
     backend::{Backend, CrosstermBackend},
-    terminal::CompletedFrame,
     Terminal,
 };
 use tui_screen::TuiScreen;
@@ -36,7 +35,7 @@ mod tui_screen;
 
 use emu::{Output, Screen};
 
-use crate::runner::AsyncRunner;
+use crate::{emu::Input, runner::AsyncRunner};
 
 #[derive(Clone, Debug, Deserialize)]
 enum FileContents {
@@ -96,7 +95,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Set up initial emulator state as specified by config.
     let send_string = |s: Vec<u8>| {
-        input_tx.send(s).unwrap();
+        input_tx.send(Input::Console(s)).unwrap();
     };
     fn b64(b: &[u8]) -> String {
         general_purpose::STANDARD_NO_PAD.encode(b)
@@ -130,15 +129,14 @@ async fn main() -> anyhow::Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     // Run main loop.
-    fn draw<'a, B: Backend>(
-        terminal: &'a mut Terminal<B>,
-        screen: &Screen,
-    ) -> io::Result<CompletedFrame<'a>> {
+    fn draw<B: Backend>(terminal: &mut Terminal<B>, screen: &Screen) -> io::Result<(u16, u16)> {
+        let mut screen_ofs = (0, 0);
         terminal.draw(|f| {
             let size = f.size();
             let block = TuiScreen::new(screen);
-            f.render_widget(block, size);
-        })
+            f.render_stateful_widget(block, size, &mut screen_ofs);
+        })?;
+        Ok(screen_ofs)
     }
 
     let mut events = EventStream::new();
@@ -146,6 +144,7 @@ async fn main() -> anyhow::Result<()> {
     let mut socket: Option<TcpStream> = None;
 
     let mut buf = vec![0u8; 4096];
+    let mut screen_ofs = (0, 0);
 
     loop {
         let sock_read: option_future::OptionFuture<_> =
@@ -171,7 +170,7 @@ async fn main() -> anyhow::Result<()> {
                         socket = None;
                     }
                     Ok(n) => {
-                        input_tx.send(buf[..n].to_owned()).unwrap();
+                        input_tx.send(Input::Console(buf[..n].to_owned())).unwrap();
                     }
                     Err(err) => {
                         error!("socket err: {err}");
@@ -182,7 +181,7 @@ async fn main() -> anyhow::Result<()> {
             output = output_rx.recv() => {
                 match output.unwrap() {
                     Output::Screen(s) => {
-                        draw(&mut terminal, &s)?;
+                        screen_ofs = draw(&mut terminal, &s)?;
                         screen = Some(*s);
                     }
                     Output::Console(data) => {
@@ -206,9 +205,22 @@ async fn main() -> anyhow::Result<()> {
                             _ => {}
                         }
                     }
+                    Event::Mouse(m) => {
+                        use event::MouseEventKind::*;
+                        let x = m.column.saturating_sub(screen_ofs.0).clamp(0, 175) as u8;
+                        let y = (m.row * 2).saturating_sub(screen_ofs.1).clamp(0, 175) as u8;
+                        match m.kind {
+                            Down(_) => input_tx.send(Input::Touch(x, y, true))?,
+                            Up(_) => input_tx.send(Input::Touch(x, y, false))?,
+                            Drag(_) => input_tx.send(Input::Touch(x, y, true))?,
+                            Moved => {}
+                            ScrollDown => {}
+                            ScrollUp => {}
+                        }
+                    }
                     Event::Resize(..) => {
                         if let Some(screen) = &screen {
-                            draw(&mut terminal, screen)?;
+                            screen_ofs = draw(&mut terminal, screen)?;
                         }
                     }
                     _ => {}

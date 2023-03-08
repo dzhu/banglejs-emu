@@ -57,6 +57,12 @@ impl Display for Screen {
     }
 }
 
+#[derive(Debug)]
+pub enum Input {
+    Console(Vec<u8>),
+    Touch(u8, u8, bool),
+}
+
 pub enum Output {
     Console(Vec<u8>),
     Screen(Box<Screen>),
@@ -90,12 +96,82 @@ struct ModuleFuncs {
     js_init: TypedFunc<(), ()>,
     js_push_char: TypedFunc<(i32, i32), ()>,
     js_send_pin_watch_event: TypedFunc<i32, ()>,
+    js_send_touch_event: TypedFunc<(i32, i32, i32, i32), ()>,
+}
+
+#[repr(u8)]
+enum Gesture {
+    Drag = 0,
+    Down = 1,
+    Up = 2,
+    Left = 3,
+    Right = 4,
+    Touch = 5,
+}
+
+#[derive(Debug, Default)]
+struct TouchTracker {
+    start_last: Option<((u8, u8), (u8, u8))>,
+    dist: (u64, u64),
+}
+
+impl TouchTracker {
+    fn add_touch(&mut self, pt: (u8, u8), on: bool) -> Vec<Gesture> {
+        match (self.start_last, on) {
+            // Start new touch -- record start and emit a drag.
+            (None, true) => {
+                self.start_last = Some((pt, pt));
+                self.dist = (0, 0);
+                vec![Gesture::Drag]
+            }
+            // Continue existing touch -- update state and emit a drag.
+            (Some((start, last)), true) => {
+                self.dist.0 += u64::from(pt.0.abs_diff(last.0));
+                self.dist.1 += u64::from(pt.1.abs_diff(last.1));
+                self.start_last = Some((start, pt));
+                vec![Gesture::Drag]
+            }
+            // Release existing touch -- check stats and see what to emit in
+            // addition to a drag.
+            (Some((start, last)), false) => {
+                self.dist.0 += u64::from(pt.0.abs_diff(last.0));
+                self.dist.1 += u64::from(pt.1.abs_diff(last.1));
+
+                let mut ret = vec![Gesture::Drag];
+
+                if self.dist.0 < 5 && self.dist.1 < 5 {
+                    ret.push(Gesture::Touch);
+                }
+                if self.dist.0 > 80 && self.dist.1 < 20 {
+                    ret.push(if pt.0 > start.0 {
+                        Gesture::Right
+                    } else {
+                        Gesture::Left
+                    });
+                }
+                if self.dist.0 < 20 && self.dist.1 > 80 {
+                    ret.push(if pt.1 > start.1 {
+                        Gesture::Down
+                    } else {
+                        Gesture::Up
+                    });
+                }
+
+                self.start_last = None;
+                ret
+            }
+            // Supposedly end touch when already ended -- ignore.
+            (None, false) => vec![],
+        }
+    }
 }
 
 pub struct Emulator {
     store: Store<State>,
     instance: Instance,
     funcs: ModuleFuncs,
+
+    touch: TouchTracker,
 }
 
 impl Emulator {
@@ -174,11 +250,13 @@ impl Emulator {
             js_init: instance.get_typed_func(&mut store, "jsInit")?,
             js_push_char: instance.get_typed_func(&mut store, "jshPushIOCharEvent")?,
             js_send_pin_watch_event: instance.get_typed_func(&mut store, "jsSendPinWatchEvent")?,
+            js_send_touch_event: instance.get_typed_func(&mut store, "jsSendTouchEvent")?,
         };
         Ok(Self {
             store,
             instance,
             funcs,
+            touch: Default::default(),
         })
     }
 
@@ -277,5 +355,15 @@ impl Emulator {
         self.funcs
             .js_send_pin_watch_event
             .call(&mut self.store, pin)
+    }
+
+    pub fn send_touch(&mut self, x: u8, y: u8, on: bool) -> anyhow::Result<()> {
+        for gesture in self.touch.add_touch((x, y), on) {
+            self.funcs.js_send_touch_event.call(
+                &mut self.store,
+                (x as i32, y as i32, on as i32, gesture as i32),
+            )?;
+        }
+        Ok(())
     }
 }

@@ -2,7 +2,7 @@ use tui::{
     buffer::Buffer,
     layout::{Alignment, Rect},
     style::Color,
-    widgets::Widget,
+    widgets::StatefulWidget,
 };
 
 use crate::emu::{self, Screen};
@@ -39,16 +39,22 @@ fn color(c: emu::Color) -> Color {
     }
 }
 
-impl<'a> Widget for TuiScreen<'a> {
-    fn render(self, area: Rect, buf: &mut Buffer) {
+impl<'a> StatefulWidget for TuiScreen<'a> {
+    type State = (u16, u16);
+
+    fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
         if area.height < 1 {
             return;
         }
 
         let x0 = get_line_offset(176, area.width, Alignment::Center);
+        let y0 = 0;
+
+        *state = (x0, y0);
+
         for y in (0..176.min(2 * area.height)).step_by(2) {
             for x in 0..176.min(area.width) {
-                buf.get_mut(area.left() + x0 + x, area.top() + y / 2)
+                buf.get_mut(area.left() + x0 + x, area.top() + y0 + y / 2)
                     .set_symbol("\u{2584}")
                     .set_bg(color(self.screen.0[y as usize][x as usize]))
                     .set_fg(color(self.screen.0[y as usize + 1][x as usize]));
