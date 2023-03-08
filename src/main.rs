@@ -75,10 +75,6 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let args = Args::parse();
-
-    let config = Config::read(&args.config_path)?;
-
     Builder::from_default_env()
         .format_timestamp_micros()
         .target(Target::Pipe(Box::new(
@@ -86,22 +82,19 @@ async fn main() -> anyhow::Result<()> {
         )))
         .init();
 
-    // Set up emulator.
-    let emu = AsyncRunner::new(&args.wasm_path)?;
+    // Start up emulator and network listener.
+    let args = Args::parse();
+    let config = Config::read(&args.config_path)?;
 
     let (input_tx, input_rx) = mpsc::unbounded_channel();
     let (output_tx, mut output_rx) = mpsc::unbounded_channel();
 
+    let emu = AsyncRunner::new(&args.wasm_path)?;
     tokio::spawn(emu.run(input_rx, output_tx));
 
-    // Set up terminal.
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
+    let listener = TcpListener::bind(args.bind.as_deref().unwrap_or("127.0.0.1:37026")).await?;
 
-    // Run UI loop.
+    // Set up initial emulator state as specified by config.
     let send_string = |s: Vec<u8>| {
         input_tx.send(s).unwrap();
     };
@@ -129,6 +122,14 @@ async fn main() -> anyhow::Result<()> {
         send_string(s.clone().into_bytes());
     }
 
+    // Set up terminal.
+    enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+
+    // Run main loop.
     fn draw<'a, B: Backend>(
         terminal: &'a mut Terminal<B>,
         screen: &Screen,
@@ -144,9 +145,6 @@ async fn main() -> anyhow::Result<()> {
     let mut screen: Option<Screen> = None;
     let mut socket: Option<TcpStream> = None;
 
-    let listener = TcpListener::bind(args.bind.as_deref().unwrap_or("127.0.0.1:37026"))
-        .await
-        .unwrap();
     let mut buf = vec![0u8; 4096];
 
     loop {
