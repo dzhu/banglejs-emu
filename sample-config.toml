@@ -1,11 +1,30 @@
+## Start execution with storage populated with files as if the watch has just
+## been factory reset (the storage starts out empty if this option is false or
+## unspecified).
 factory_reset = true
-startup = "load();\n"
 
-[storage."antonclk.info"]
-contents = '{"type":"clock","name":"Anton Clock Plus","src":"antonclkplus.app.js"}'
+## A string to send to the watch after it starts up. Without the load, it goes
+## into the welcome app to start.
+startup = """
+\u0010echo(0);
+load();
+"""
 
-[storage."antonclk.app.js"]
-path = "../BangleApps/apps/antonclkplus/app.js"
 
-[storage."antonclk.json"]
-contents = '{"secondsMode": "Always", "secondsColoured": true, "secondsWithColon": true}'
+## If a clone of the BangleApps repo (https://github.com/espruino/BangleApps) is
+## present at `../BangleApps`, uncommenting the section below will change the
+## clock app to Anton Clock Plus. It overwrites the base Anton Clock files
+## directly instead of using `antonclkplus` as the app name because the chosen
+## clock is already set by the time we create these files in storage.
+
+# [storage."antonclk.info"]
+# contents = '{"type": "clock", "name": "Anton Clock Plus", "src": "antonclk.app.js"}'
+
+# [storage."antonclk.app.js"]
+# path = "../BangleApps/apps/antonclkplus/app.js"
+
+# [storage."antonclk.settings.js"]
+# path = "../BangleApps/apps/antonclkplus/settings.js"
+
+# [storage."antonclk.json"]
+# contents = '{"secondsMode": "Always", "secondsColoured": true, "secondsWithColon": true, "dateOnMain": "ISO8601"}'
