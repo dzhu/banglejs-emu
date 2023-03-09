@@ -23,13 +23,15 @@ impl AsyncRunner {
         output: UnboundedSender<Output>,
     ) -> anyhow::Result<()> {
         let mut emu = self.emu;
-        let cb = |chars| {
-            let _ = output.send(Output::Console(chars));
+        let send_output = |chars: Vec<u8>| {
+            if !chars.is_empty() {
+                let _ = output.send(Output::Console(chars));
+            }
         };
 
         emu.init()?;
         emu.send_pin_watch_event(BTN1)?;
-        cb(emu.handle_io()?);
+        send_output(emu.handle_io()?);
 
         loop {
             let mut delay = 1;
@@ -44,7 +46,7 @@ impl AsyncRunner {
                 let screen = emu.get_screen()?;
                 let _ = output.send(Output::Screen(Box::new(screen)));
             }
-            cb(emu.handle_io()?);
+            send_output(emu.handle_io()?);
 
             let mut first = true;
             loop {
