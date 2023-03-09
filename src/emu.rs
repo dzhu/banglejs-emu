@@ -260,6 +260,14 @@ impl Emulator {
         })
     }
 
+    pub fn new_with_flash<P: AsRef<Path>>(path: P, data: &[u8]) -> anyhow::Result<Self> {
+        let mut emu = Self::new(path)?;
+        let flash = &mut emu.store.data_mut().flash;
+        let n = flash.len().min(data.len());
+        flash[..n].copy_from_slice(&data[..n]);
+        Ok(emu)
+    }
+
     pub fn init(&mut self) -> anyhow::Result<()> {
         self.funcs.js_init.call(&mut self.store, ())
     }

@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     fs::{self, File},
-    io::{self, Read},
+    io::{self, BufRead, BufReader, Read},
     path::{Path, PathBuf},
 };
 
@@ -35,7 +35,10 @@ mod tui_screen;
 
 use emu::{Output, Screen};
 
-use crate::{emu::Input, runner::AsyncRunner};
+use crate::{
+    emu::{Emulator, Input},
+    runner::AsyncRunner,
+};
 
 #[derive(Clone, Debug, Deserialize)]
 enum FileContents {
@@ -47,6 +50,7 @@ enum FileContents {
 
 #[derive(Clone, Debug, Deserialize)]
 struct Config {
+    flash_initial_contents_file: Option<String>,
     #[serde(default)]
     storage: HashMap<String, FileContents>,
     startup: Option<String>,
@@ -72,6 +76,27 @@ struct Args {
     wasm_path: PathBuf,
 }
 
+fn get_flash_initial_contents<P: AsRef<Path>>(path: P) -> anyhow::Result<Vec<u8>> {
+    let f = File::open(path)?;
+    let f = BufReader::new(f);
+
+    let mut ret = vec![];
+
+    for line in f.lines() {
+        let line = line?;
+        let fields = line.split(',');
+        let row: Result<Vec<u8>, _> = fields
+            .filter(|f| !f.is_empty())
+            .map(|f| f.parse())
+            .collect();
+        if let Ok(row) = row {
+            ret.extend(row);
+        }
+    }
+
+    Ok(ret)
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     Builder::from_default_env()
@@ -88,7 +113,14 @@ async fn main() -> anyhow::Result<()> {
     let (input_tx, input_rx) = mpsc::unbounded_channel();
     let (output_tx, mut output_rx) = mpsc::unbounded_channel();
 
-    let emu = AsyncRunner::new(&args.wasm_path)?;
+    let emu = if let Some(f) = &config.flash_initial_contents_file {
+        let flash = get_flash_initial_contents(f)?;
+        Emulator::new_with_flash(&args.wasm_path, &flash)?
+    } else {
+        Emulator::new(&args.wasm_path)?
+    };
+    let emu = AsyncRunner::new(emu);
+
     tokio::spawn(emu.run(input_rx, output_tx));
 
     let listener = TcpListener::bind(args.bind.as_deref().unwrap_or("127.0.0.1:37026")).await?;

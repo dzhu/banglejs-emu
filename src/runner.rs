@@ -1,4 +1,4 @@
-use std::{path::Path, time::Duration};
+use std::time::Duration;
 
 use futures_timer::Delay;
 use tokio::{
@@ -13,10 +13,8 @@ pub struct AsyncRunner {
 }
 
 impl AsyncRunner {
-    pub fn new<P: AsRef<Path>>(path: P) -> anyhow::Result<Self> {
-        Ok(Self {
-            emu: Emulator::new(path)?,
-        })
+    pub fn new(emu: Emulator) -> Self {
+        Self { emu }
     }
 
     pub async fn run(
