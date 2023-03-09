@@ -5,6 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use anyhow::Context;
 use base64::{engine::general_purpose, Engine};
 use clap::Parser;
 use crossterm::{
@@ -99,16 +100,19 @@ fn get_flash_initial_contents<P: AsRef<Path>>(path: P) -> anyhow::Result<Vec<u8>
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let log_file = "/tmp/emu.log";
     Builder::from_default_env()
         .format_timestamp_micros()
         .target(Target::Pipe(Box::new(
-            File::create("/tmp/emu.log").expect("Can't create file"),
+            File::create(log_file)
+                .with_context(|| format!("Failed to create log file {log_file}"))?,
         )))
         .init();
 
     // Start up emulator and network listener.
     let args = Args::parse();
-    let config = Config::read(&args.config_path)?;
+    let config = Config::read(&args.config_path)
+        .with_context(|| format!("Failed to open config file {:?}", args.config_path))?;
 
     let (input_tx, input_rx) = mpsc::unbounded_channel();
     let (output_tx, mut output_rx) = mpsc::unbounded_channel();
@@ -123,7 +127,10 @@ async fn main() -> anyhow::Result<()> {
 
     tokio::spawn(emu.run(input_rx, output_tx));
 
-    let listener = TcpListener::bind(args.bind.as_deref().unwrap_or("127.0.0.1:37026")).await?;
+    let bind = args.bind.as_deref().unwrap_or("127.0.0.1:37026");
+    let listener = TcpListener::bind(bind)
+        .await
+        .with_context(|| format!("Failed to bind {bind}"))?;
 
     // Set up initial emulator state as specified by config.
     let send_string = |s: Vec<u8>| {
@@ -135,7 +142,9 @@ async fn main() -> anyhow::Result<()> {
 
     for (path, contents) in &config.storage {
         let contents = match contents {
-            FileContents::Path(p) => fs::read(p)?,
+            FileContents::Path(p) => {
+                fs::read(p).with_context(|| format!("Failed to load file {p:?}"))?
+            }
             FileContents::Contents(s) => s.clone().into_bytes(),
         };
         info!("writing {} bytes to {}", contents.len(), path);
