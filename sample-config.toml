@@ -1,5 +1,5 @@
+factory_reset = true
 startup = "load();\n"
-flash_initial_contents_file = "../Espruino/libs/banglejs/banglejs2_storage_default.c"
 
 [storage."antonclk.info"]
 contents = '{"type":"clock","name":"Anton Clock Plus","src":"antonclkplus.app.js"}'

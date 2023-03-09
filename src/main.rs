@@ -51,6 +51,8 @@ enum FileContents {
 
 #[derive(Clone, Debug, Deserialize)]
 struct Config {
+    #[serde(default)]
+    factory_reset: bool,
     flash_initial_contents_file: Option<String>,
     #[serde(default)]
     storage: HashMap<String, FileContents>,
@@ -117,12 +119,17 @@ async fn main() -> anyhow::Result<()> {
     let (input_tx, input_rx) = mpsc::unbounded_channel();
     let (output_tx, mut output_rx) = mpsc::unbounded_channel();
 
-    let emu = if let Some(f) = &config.flash_initial_contents_file {
+    let mut emu = if let Some(f) = &config.flash_initial_contents_file {
         let flash = get_flash_initial_contents(f)?;
         Emulator::new_with_flash(&args.wasm_path, &flash)?
     } else {
         Emulator::new(&args.wasm_path)?
     };
+
+    if config.factory_reset {
+        emu.reset_storage()?;
+    }
+
     let emu = AsyncRunner::new(emu);
 
     tokio::spawn(emu.run(input_rx, output_tx));

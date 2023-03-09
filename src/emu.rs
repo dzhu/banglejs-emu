@@ -95,6 +95,7 @@ struct ModuleFuncs {
     js_idle: TypedFunc<(), i32>,
     js_init: TypedFunc<(), ()>,
     js_push_char: TypedFunc<(i32, i32), ()>,
+    js_reset_storage: TypedFunc<(), ()>,
     js_send_pin_watch_event: TypedFunc<i32, ()>,
     js_send_touch_event: TypedFunc<(i32, i32, i32, i32), ()>,
 }
@@ -249,6 +250,7 @@ impl Emulator {
             js_idle: instance.get_typed_func(&mut store, "jsIdle")?,
             js_init: instance.get_typed_func(&mut store, "jsInit")?,
             js_push_char: instance.get_typed_func(&mut store, "jshPushIOCharEvent")?,
+            js_reset_storage: instance.get_typed_func(&mut store, "jsfResetStorage")?,
             js_send_pin_watch_event: instance.get_typed_func(&mut store, "jsSendPinWatchEvent")?,
             js_send_touch_event: instance.get_typed_func(&mut store, "jsSendTouchEvent")?,
         };
@@ -309,6 +311,10 @@ impl Emulator {
         let mut char_q = mem::take(&mut self.store.data_mut().char_q);
         Self::js_handle_io(&mut self.store, &self.instance, &mut char_q)?;
         Ok(char_q)
+    }
+
+    pub fn reset_storage(&mut self) -> anyhow::Result<()> {
+        self.funcs.js_reset_storage.call(&mut self.store, ())
     }
 
     pub fn get_screen(&mut self) -> anyhow::Result<Screen> {
