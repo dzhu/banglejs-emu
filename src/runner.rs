@@ -62,6 +62,9 @@ impl AsyncRunner {
                             match s {
                                 Input::Console(s) => emu.push_string(&s)?,
                                 Input::Touch(x, y, on) => emu.send_touch(x, y, on)?,
+                                Input::Button(on) => {
+                                    emu.press_button(on)?;
+                                }
                             }
                         }
                     }

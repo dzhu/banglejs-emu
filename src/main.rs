@@ -3,6 +3,8 @@ use std::{
     fs::{self, File},
     io::{self, BufRead, BufReader, Read},
     path::{Path, PathBuf},
+    str,
+    time::{Duration, Instant},
 };
 
 use anyhow::Context;
@@ -15,6 +17,7 @@ use crossterm::{
 };
 use env_logger::{Builder, Target};
 use futures::{future::FutureExt, StreamExt};
+use futures_timer::Delay;
 use log::{debug, error, info};
 use serde_derive::Deserialize;
 use tokio::{
@@ -193,10 +196,14 @@ async fn main() -> anyhow::Result<()> {
 
     let mut buf = vec![0u8; 4096];
     let mut screen_ofs = (0, 0);
+    let mut button_deadline = None;
 
     loop {
         let sock_read: option_future::OptionFuture<_> =
             socket.as_mut().map(|s| s.read(&mut buf)).into();
+        let button_timeout: option_future::OptionFuture<_> = button_deadline
+            .map(|d| Delay::new(d - Instant::now()))
+            .into();
         select! {
             new_conn = listener.accept() => {
                 let (s, addr) = new_conn?;
@@ -233,11 +240,16 @@ async fn main() -> anyhow::Result<()> {
                         screen = Some(*s);
                     }
                     Output::Console(data) => {
+                        info!("output: {:?}", str::from_utf8(&data));
                         if let Some(socket) = &mut socket {
                             let _ = socket.write_all(&data).await;
                         }
                     }
                 }
+            }
+            _ = button_timeout => {
+                input_tx.send(Input::Button(false)).unwrap();
+                button_deadline = None;
             }
             ev = events.next().fuse() => {
                 match ev.unwrap().unwrap() {
@@ -249,6 +261,17 @@ async fn main() -> anyhow::Result<()> {
                             Right => send_string(b"\x10Bangle.emit('swipe', 1, 0);\n".to_vec()),
                             Up => send_string(b"\x10Bangle.emit('swipe', 0, -1);\n".to_vec()),
                             Down => send_string(b"\x10Bangle.emit('swipe', 0, 1);\n".to_vec()),
+                            Enter => {
+                                // Since we don't get key-up events in the
+                                // terminal, hold the button for a fixed amount
+                                // of time after we get a key event; key repeat
+                                // will make holding the key down act like
+                                // holding the button down.
+                                if button_deadline.is_none() {
+                                    input_tx.send(Input::Button(true)).unwrap();
+                                }
+                                button_deadline = Some(Instant::now() + Duration::from_millis(300));
+                            }
                             Char('q') | Esc => break,
                             _ => {}
                         }

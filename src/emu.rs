@@ -61,6 +61,7 @@ impl Display for Screen {
 pub enum Input {
     Console(Vec<u8>),
     Touch(u8, u8, bool),
+    Button(bool),
 }
 
 pub enum Output {
@@ -379,5 +380,11 @@ impl Emulator {
             )?;
         }
         Ok(())
+    }
+
+    pub fn press_button(&mut self, on: bool) -> anyhow::Result<()> {
+        // Pin values are expected to be inverted.
+        self.store.data_mut().pins[BTN1 as usize] = !on;
+        self.send_pin_watch_event(BTN1)
     }
 }
