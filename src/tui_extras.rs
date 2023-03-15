@@ -54,10 +54,17 @@ impl<'a> StatefulWidget for TuiScreen<'a> {
 
         for y in (0..176.min(2 * area.height)).step_by(2) {
             for x in 0..176.min(area.width) {
-                buf.get_mut(area.left() + x0 + x, area.top() + y0 + y / 2)
-                    .set_symbol("\u{2584}")
-                    .set_bg(color(self.screen.0[y as usize][x as usize]))
-                    .set_fg(color(self.screen.0[y as usize + 1][x as usize]));
+                let cell = buf.get_mut(area.left() + x0 + x, area.top() + y0 + y / 2);
+
+                if (area.width < 176 && x == area.width - 1)
+                    || (area.height < 88 && y / 2 == area.height - 1)
+                {
+                    cell.set_symbol("\u{2026}");
+                } else {
+                    cell.set_symbol("\u{2584}")
+                        .set_bg(color(self.screen.0[y as usize][x as usize]))
+                        .set_fg(color(self.screen.0[y as usize + 1][x as usize]));
+                };
             }
         }
     }
