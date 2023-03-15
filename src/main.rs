@@ -28,20 +28,23 @@ use tokio::{
 };
 use tui::{
     backend::{Backend, CrosstermBackend},
+    layout::{Alignment, Rect},
+    widgets::{Block, Borders, Paragraph},
     Terminal,
 };
-use tui_screen::TuiScreen;
+use tui_extras::TuiScreen;
 
 mod emu;
 mod option_future;
 mod runner;
-mod tui_screen;
+mod tui_extras;
 
 use emu::{Output, Screen};
 
 use crate::{
     emu::{Emulator, Input},
     runner::AsyncRunner,
+    tui_extras::Blocked,
 };
 
 #[derive(Clone, Debug, Deserialize)]
@@ -180,12 +183,44 @@ async fn main() -> anyhow::Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     // Run main loop.
-    fn draw<B: Backend>(terminal: &mut Terminal<B>, screen: &Screen) -> io::Result<(u16, u16)> {
+    fn draw<B: Backend>(
+        terminal: &mut Terminal<B>,
+        screen: &Option<Screen>,
+        output: &[u8],
+    ) -> io::Result<(u16, u16)> {
         let mut screen_ofs = (0, 0);
         terminal.draw(|f| {
-            let size = f.size();
-            let block = TuiScreen::new(screen);
-            f.render_stateful_widget(block, size, &mut screen_ofs);
+            let w1 = 178;
+            let w2 = 80;
+
+            let width = f.size().width;
+            let height = f.size().height;
+
+            let (w1, w2) = if width >= w1 + w2 {
+                (w1, width - w1)
+            } else {
+                (width * w1 / (w1 + w2), width * w2 / (w1 + w2))
+            };
+
+            if let Some(screen) = screen {
+                let screen = Blocked::new(
+                    Block::default()
+                        .title("Screen")
+                        .title_alignment(Alignment::Center)
+                        .borders(Borders::ALL),
+                    TuiScreen::new(screen),
+                );
+                f.render_stateful_widget(screen, Rect::new(0, 0, w1, height), &mut screen_ofs);
+            }
+
+            let output = Blocked::new(
+                Block::default()
+                    .title("Console")
+                    .title_alignment(Alignment::Center)
+                    .borders(Borders::ALL),
+                Paragraph::new(String::from_utf8_lossy(output)),
+            );
+            f.render_widget(output, Rect::new(w1, 0, w2, height));
         })?;
         Ok(screen_ofs)
     }
@@ -197,6 +232,7 @@ async fn main() -> anyhow::Result<()> {
     let mut buf = vec![0u8; 4096];
     let mut screen_ofs = (0, 0);
     let mut button_deadline = None;
+    let mut output_buf = vec![];
 
     loop {
         let sock_read: option_future::OptionFuture<_> =
@@ -236,14 +272,16 @@ async fn main() -> anyhow::Result<()> {
             output = output_rx.recv() => {
                 match output.unwrap() {
                     Output::Screen(s) => {
-                        screen_ofs = draw(&mut terminal, &s)?;
                         screen = Some(*s);
+                        screen_ofs = draw(&mut terminal, &screen, &output_buf)?;
                     }
                     Output::Console(data) => {
                         info!("output: {:?}", str::from_utf8(&data));
                         if let Some(socket) = &mut socket {
                             let _ = socket.write_all(&data).await;
                         }
+                        output_buf.extend(data);
+                        screen_ofs = draw(&mut terminal, &screen, &output_buf)?;
                     }
                 }
             }
@@ -290,9 +328,7 @@ async fn main() -> anyhow::Result<()> {
                         }
                     }
                     Event::Resize(..) => {
-                        if let Some(screen) = &screen {
-                            screen_ofs = draw(&mut terminal, screen)?;
-                        }
+                        screen_ofs = draw(&mut terminal, &screen, &output_buf)?;
                     }
                     _ => {}
                 }

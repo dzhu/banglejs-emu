@@ -2,7 +2,7 @@ use tui::{
     buffer::Buffer,
     layout::{Alignment, Rect},
     style::Color,
-    widgets::StatefulWidget,
+    widgets::{Block, StatefulWidget, Widget},
 };
 
 use crate::emu::{self, Screen};
@@ -60,5 +60,34 @@ impl<'a> StatefulWidget for TuiScreen<'a> {
                     .set_fg(color(self.screen.0[y as usize + 1][x as usize]));
             }
         }
+    }
+}
+
+pub struct Blocked<'a, W> {
+    block: Block<'a>,
+    inner: W,
+}
+
+impl<'a, W> Blocked<'a, W> {
+    pub fn new(block: Block<'a>, inner: W) -> Self {
+        Self { block, inner }
+    }
+}
+
+impl<'a, W: Widget> Widget for Blocked<'a, W> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        let inner = self.block.inner(area);
+        self.block.render(area, buf);
+        self.inner.render(inner, buf);
+    }
+}
+
+impl<'a, W: StatefulWidget> StatefulWidget for Blocked<'a, W> {
+    type State = W::State;
+
+    fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
+        let inner = self.block.inner(area);
+        self.block.render(area, buf);
+        self.inner.render(inner, buf, state);
     }
 }
