@@ -8,6 +8,7 @@ use std::{
 
 use log::{debug, trace};
 use wasmtime::{AsContextMut, Caller, Engine, Instance, Linker, Module, Store, TypedFunc};
+use wasmtime_wasi::{sync::WasiCtxBuilder, WasiCtx};
 
 pub const BTN1: i32 = 17;
 
@@ -70,6 +71,7 @@ pub enum Output {
 }
 
 struct State {
+    wasi_ctx: WasiCtx,
     pins: Vec<bool>,
     flash: Vec<u8>,
     char_q: Vec<u8>,
@@ -82,6 +84,7 @@ impl State {
         pins[BTN1 as usize] = true;
 
         Self {
+            wasi_ctx: WasiCtxBuilder::new().build(),
             pins,
             flash: vec![255u8; 1 << 23],
             instance: None,
@@ -181,6 +184,8 @@ impl Emulator {
         let engine = Engine::default();
 
         let mut linker = Linker::new(&engine);
+
+        wasmtime_wasi::add_to_linker(&mut linker, |s: &mut State| &mut s.wasi_ctx)?;
 
         linker.func_wrap("env", "jsHandleIO", |mut caller: Caller<'_, State>| {
             let instance = caller.data().instance.unwrap();
