@@ -2,23 +2,15 @@ use std::{
     collections::HashMap,
     fmt::Debug,
     fs::{self, File},
-    io::{self, BufRead, BufReader, Read},
+    io::{BufRead, BufReader, Read},
     path::{Path, PathBuf},
     str,
-    time::{Duration, Instant},
 };
 
 use anyhow::Context;
 use base64::{engine::general_purpose, Engine};
 use clap::Parser;
-use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, EventStream},
-    execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
-};
 use env_logger::{Builder, Target};
-use futures::StreamExt;
-use futures_timer::Delay;
 use log::{debug, error, info};
 use serde_derive::Deserialize;
 use tokio::{
@@ -30,22 +22,17 @@ use tokio::{
         mpsc::{self, UnboundedReceiver, UnboundedSender},
     },
 };
-use tui::{
-    backend::{Backend, CrosstermBackend},
-    layout::{Alignment, Rect},
-    widgets::{Block, Borders, Paragraph},
-    Terminal,
-};
 
 mod emu;
 mod option_future;
 mod runner;
 mod tui_extras;
+mod ui;
 
 use crate::{
-    emu::{Emulator, Input, Output, Screen},
+    emu::{Emulator, Input, Output},
     runner::AsyncRunner,
-    tui_extras::{Blocked, TuiScreen},
+    ui::UIInput,
 };
 
 #[derive(Clone, Debug, Deserialize)]
@@ -107,156 +94,6 @@ fn get_flash_initial_contents<P: AsRef<Path>>(path: P) -> anyhow::Result<Vec<u8>
     Ok(ret)
 }
 
-#[derive(Debug)]
-enum UIInput {
-    Quit,
-    EmuInput(Input),
-}
-
-async fn run_tui(
-    mut rx: UnboundedReceiver<Output>,
-    tx: UnboundedSender<UIInput>,
-    mut quit: Receiver<()>,
-) -> anyhow::Result<()> {
-    // Set up terminal.
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
-
-    fn draw<B: Backend>(
-        terminal: &mut Terminal<B>,
-        screen: &Option<Screen>,
-        output: &[u8],
-    ) -> io::Result<(u16, u16)> {
-        let mut screen_ofs = (0, 0);
-        terminal.draw(|f| {
-            let w1 = 178;
-            let w2 = 80;
-
-            let width = f.size().width;
-            let height = f.size().height;
-
-            let (w1, w2) = if width >= w1 + w2 {
-                (w1, width - w1)
-            } else {
-                (width * w1 / (w1 + w2), width * w2 / (w1 + w2))
-            };
-
-            if let Some(screen) = screen {
-                let screen = Blocked::new(
-                    Block::default()
-                        .title("Screen")
-                        .title_alignment(Alignment::Center)
-                        .borders(Borders::ALL),
-                    TuiScreen::new(screen),
-                );
-                f.render_stateful_widget(screen, Rect::new(0, 0, w1, height), &mut screen_ofs);
-            }
-
-            let output = Blocked::new(
-                Block::default()
-                    .title("Console")
-                    .title_alignment(Alignment::Center)
-                    .borders(Borders::ALL),
-                Paragraph::new(String::from_utf8_lossy(output)),
-            );
-            f.render_widget(output, Rect::new(w1, 0, w2, height));
-        })?;
-        Ok(screen_ofs)
-    }
-
-    let send_string = |data: Vec<u8>| tx.send(UIInput::EmuInput(Input::Console(data))).unwrap();
-
-    let mut screen_ofs = (0, 0);
-    let mut output_buf = vec![];
-    let mut screen: Option<Screen> = None;
-    let mut events = EventStream::new();
-    let mut button_deadline = None;
-
-    loop {
-        let button_timeout: option_future::OptionFuture<_> = button_deadline
-            .map(|d| Delay::new(d - Instant::now()))
-            .into();
-        select! {
-            _ = quit.recv() => break,
-            output = rx.recv() => {
-                match output {
-                    Some(Output::Screen(s)) => {
-                        screen = Some(*s);
-                        screen_ofs = draw(&mut terminal, &screen, &output_buf)?;
-                    }
-                    Some(Output::Console(data)) => {
-                        output_buf.extend(data);
-                        screen_ofs = draw(&mut terminal, &screen, &output_buf)?;
-                    }
-                    None => break,
-                }
-            }
-            ev = events.next() => {
-                match ev.unwrap().unwrap() {
-                    Event::Key(k) => {
-                        use event::KeyCode::*;
-                        debug!("key: {k:?}");
-                        match k.code {
-                            Left => send_string(b"\x10Bangle.emit('swipe', -1, 0);\n".to_vec()),
-                            Right => send_string(b"\x10Bangle.emit('swipe', 1, 0);\n".to_vec()),
-                            Up => send_string(b"\x10Bangle.emit('swipe', 0, -1);\n".to_vec()),
-                            Down => send_string(b"\x10Bangle.emit('swipe', 0, 1);\n".to_vec()),
-                            Enter => {
-                                // Since we don't get key-up events in the
-                                // terminal, hold the button for a fixed amount
-                                // of time after we get a key event; key repeat
-                                // will make holding the key down act like
-                                // holding the button down.
-                                if button_deadline.is_none() {
-                                    tx.send(UIInput::EmuInput(Input::Button(true))).unwrap();
-                                }
-                                button_deadline = Some(Instant::now() + Duration::from_millis(300));
-                            }
-                            Char('q') | Esc => tx.send(UIInput::Quit)?,
-                            _ => {}
-                        }
-                    }
-                    Event::Mouse(m) => {
-                        use event::MouseEventKind::*;
-                        let x = m.column.saturating_sub(screen_ofs.0).clamp(0, 175) as u8;
-                        let y = (m.row * 2).saturating_sub(screen_ofs.1).clamp(0, 175) as u8;
-                        match m.kind {
-                            Down(_) => tx.send(UIInput::EmuInput(Input::Touch(x, y, true)))?,
-                            Up(_) => tx.send(UIInput::EmuInput(Input::Touch(x, y, false)))?,
-                            Drag(_) => tx.send(UIInput::EmuInput(Input::Touch(x, y, true)))?,
-                            Moved => {}
-                            ScrollDown => {}
-                            ScrollUp => {}
-                        }
-                    }
-                    Event::Resize(..) => {
-                        screen_ofs = draw(&mut terminal, &screen, &output_buf)?;
-                    }
-                    _ => {}
-                }
-            }
-            _ = button_timeout => {
-                tx.send(UIInput::EmuInput(Input::Button(false))).unwrap();
-                button_deadline = None;
-            }
-        }
-    }
-
-    // Restore terminal.
-    disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
-    )?;
-    terminal.show_cursor()?;
-
-    Ok(())
-}
-
 async fn run_net(
     bind: impl ToSocketAddrs + Debug,
     mut rx: UnboundedReceiver<Vec<u8>>,
@@ -313,6 +150,19 @@ async fn run_net(
     Ok(())
 }
 
+async fn run_emu(
+    emu: Emulator,
+    rx: UnboundedReceiver<Input>,
+    tx: UnboundedSender<Output>,
+    mut quit: Receiver<()>,
+) -> anyhow::Result<()> {
+    let emu = AsyncRunner::new(emu);
+    select! {
+        _ = quit.recv() => Ok(()),
+        ret = emu.run(rx, tx) => ret,
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let log_file = "/tmp/emu.log";
@@ -350,12 +200,11 @@ async fn main() -> anyhow::Result<()> {
         emu.reset_storage()?;
     }
 
-    let emu = AsyncRunner::new(emu);
     let bind = args.bind.as_deref().unwrap_or("127.0.0.1:37026").to_owned();
 
-    tokio::spawn(emu.run(to_emu_rx, from_emu_tx));
+    let emu_handle = tokio::spawn(run_emu(emu, to_emu_rx, from_emu_tx, quit_tx.subscribe()));
     let net_handle = tokio::spawn(run_net(bind, to_net_rx, from_net_tx, quit_tx.subscribe()));
-    let ui_handle = tokio::spawn(run_tui(to_ui_rx, from_ui_tx, quit_tx.subscribe()));
+    let ui_handle = tokio::spawn(ui::run_tui(to_ui_rx, from_ui_tx, quit_tx.subscribe()));
 
     // Set up initial emulator state as specified by config.
     let send_string = |s: Vec<u8>| {
@@ -412,6 +261,7 @@ async fn main() -> anyhow::Result<()> {
 
     drop(quit_tx);
 
+    emu_handle.await.unwrap().unwrap();
     net_handle.await.unwrap().unwrap();
     ui_handle.await.unwrap().unwrap();
 
