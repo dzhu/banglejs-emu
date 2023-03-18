@@ -32,19 +32,16 @@ use tui::{
     widgets::{Block, Borders, Paragraph},
     Terminal,
 };
-use tui_extras::TuiScreen;
 
 mod emu;
 mod option_future;
 mod runner;
 mod tui_extras;
 
-use emu::{Output, Screen};
-
 use crate::{
-    emu::{Emulator, Input},
+    emu::{Emulator, Input, Output, Screen},
     runner::AsyncRunner,
-    tui_extras::Blocked,
+    tui_extras::{Blocked, TuiScreen},
 };
 
 #[derive(Clone, Debug, Deserialize)]
