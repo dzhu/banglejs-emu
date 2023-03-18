@@ -24,7 +24,7 @@ use tokio::{
 };
 
 mod emu;
-mod option_future;
+mod futures_extras;
 mod runner;
 mod tui_extras;
 mod ui;
@@ -179,7 +179,7 @@ async fn run_net(
     let mut buf = vec![0u8; 4096];
 
     loop {
-        let sock_read: option_future::OptionFuture<_> =
+        let sock_read: futures_extras::OptionFuture<_> =
             socket.as_mut().map(|s| s.read(&mut buf)).into();
         select! {
             _ = quit.recv() => break,

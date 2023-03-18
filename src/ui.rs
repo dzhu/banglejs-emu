@@ -27,7 +27,7 @@ use tui::{
 
 use crate::{
     emu::{Input, Output, Screen},
-    option_future,
+    futures_extras::OptionFuture,
     tui_extras::{Blocked, Console, TuiScreen},
 };
 
@@ -100,7 +100,7 @@ pub async fn run_tui(
     let mut button_deadline = None;
 
     loop {
-        let button_timeout: option_future::OptionFuture<_> = button_deadline
+        let button_timeout: OptionFuture<_> = button_deadline
             .map(|d| Delay::new(d - Instant::now()))
             .into();
         select! {
