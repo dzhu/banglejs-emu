@@ -43,7 +43,7 @@ enum FileContents {
     Contents(String),
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 struct Config {
     #[serde(default)]
     factory_reset: bool,
@@ -115,7 +115,8 @@ struct Args {
     #[arg(short = 'b')]
     bind: Option<String>,
 
-    config_path: PathBuf,
+    #[arg(short = 'c')]
+    config_path: Option<PathBuf>,
 
     wasm_path: PathBuf,
 }
@@ -223,9 +224,12 @@ async fn main() -> anyhow::Result<()> {
 
     // Initialize emulator from arguments.
     let args = Args::parse();
-    let emu = Config::read(&args.config_path)
-        .with_context(|| format!("Failed to open config file {:?}", args.config_path))?
-        .build(&args.wasm_path)?;
+    let emu = match &args.config_path {
+        Some(path) => Config::read(path)
+            .with_context(|| format!("Failed to open config file {:?}", args.config_path))?,
+        None => Config::default(),
+    }
+    .build(&args.wasm_path)?;
 
     // Set up independent tasks and channels between them.
     let (to_emu_tx, to_emu_rx) = mpsc::unbounded_channel();
