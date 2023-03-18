@@ -33,6 +33,7 @@ impl Color {
     }
 }
 
+#[derive(Clone)]
 pub struct Screen(pub [[Color; 176]; 176]);
 
 impl Default for Screen {
@@ -65,6 +66,7 @@ pub enum Input {
     Button(bool),
 }
 
+#[derive(Clone)]
 pub enum Output {
     Console(Vec<u8>),
     Screen(Box<Screen>),
