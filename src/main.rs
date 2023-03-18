@@ -61,6 +61,53 @@ impl Config {
         let config: Config = toml::from_str(&buf)?;
         Ok(config)
     }
+
+    fn build<P: AsRef<Path>>(&self, wasm_path: P) -> anyhow::Result<Emulator> {
+        let mut emu = if let Some(f) = &self.flash_initial_contents_file {
+            let flash = get_flash_initial_contents(f)?;
+            Emulator::new_with_flash(&wasm_path, &flash)?
+        } else {
+            Emulator::new(&wasm_path)?
+        };
+
+        if self.factory_reset {
+            emu.reset_storage()?;
+        }
+
+        emu.init()?;
+
+        // Set up initial emulator state as specified by config.
+        let mut send_string = |s: Vec<u8>| {
+            emu.push_string(s.iter()).unwrap();
+        };
+        fn b64(b: &[u8]) -> String {
+            general_purpose::STANDARD_NO_PAD.encode(b)
+        }
+
+        for (path, contents) in &self.storage {
+            let contents = match contents {
+                FileContents::Path(p) => {
+                    fs::read(p).with_context(|| format!("Failed to load file {p:?}"))?
+                }
+                FileContents::Contents(s) => s.clone().into_bytes(),
+            };
+            info!("writing {} bytes to {}", contents.len(), path);
+            send_string(
+                format!(
+                    "\x10require('Storage').write(atob('{}'), atob('{}'));\n",
+                    b64(path.as_bytes()),
+                    b64(&contents)
+                )
+                .into_bytes(),
+            )
+        }
+
+        if let Some(s) = &self.startup {
+            send_string(s.clone().into_bytes());
+        }
+
+        Ok(emu)
+    }
 }
 
 #[derive(Debug, Parser)]
@@ -176,8 +223,9 @@ async fn main() -> anyhow::Result<()> {
 
     // Initialize emulator from arguments.
     let args = Args::parse();
-    let config = Config::read(&args.config_path)
-        .with_context(|| format!("Failed to open config file {:?}", args.config_path))?;
+    let emu = Config::read(&args.config_path)
+        .with_context(|| format!("Failed to open config file {:?}", args.config_path))?
+        .build(&args.wasm_path)?;
 
     // Set up independent tasks and channels between them.
     let (to_emu_tx, to_emu_rx) = mpsc::unbounded_channel();
@@ -189,52 +237,11 @@ async fn main() -> anyhow::Result<()> {
 
     let (quit_tx, _) = broadcast::channel(1);
 
-    let mut emu = if let Some(f) = &config.flash_initial_contents_file {
-        let flash = get_flash_initial_contents(f)?;
-        Emulator::new_with_flash(&args.wasm_path, &flash)?
-    } else {
-        Emulator::new(&args.wasm_path)?
-    };
-
-    if config.factory_reset {
-        emu.reset_storage()?;
-    }
-
     let bind = args.bind.as_deref().unwrap_or("127.0.0.1:37026").to_owned();
 
     let emu_handle = tokio::spawn(run_emu(emu, to_emu_rx, from_emu_tx, quit_tx.subscribe()));
     let net_handle = tokio::spawn(run_net(bind, to_net_rx, from_net_tx, quit_tx.subscribe()));
     let ui_handle = tokio::spawn(ui::run_tui(to_ui_rx, from_ui_tx, quit_tx.subscribe()));
-
-    // Set up initial emulator state as specified by config.
-    let send_string = |s: Vec<u8>| {
-        to_emu_tx.send(Input::Console(s)).unwrap();
-    };
-    fn b64(b: &[u8]) -> String {
-        general_purpose::STANDARD_NO_PAD.encode(b)
-    }
-
-    for (path, contents) in &config.storage {
-        let contents = match contents {
-            FileContents::Path(p) => {
-                fs::read(p).with_context(|| format!("Failed to load file {p:?}"))?
-            }
-            FileContents::Contents(s) => s.clone().into_bytes(),
-        };
-        info!("writing {} bytes to {}", contents.len(), path);
-        send_string(
-            format!(
-                "\x10require('Storage').write(atob('{}'), atob('{}'));\n",
-                b64(path.as_bytes()),
-                b64(&contents)
-            )
-            .into_bytes(),
-        )
-    }
-
-    if let Some(s) = &config.startup {
-        send_string(s.clone().into_bytes());
-    }
 
     // Run main loop.
     loop {

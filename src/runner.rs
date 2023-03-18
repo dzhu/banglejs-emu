@@ -29,7 +29,6 @@ impl AsyncRunner {
             }
         };
 
-        emu.init()?;
         emu.send_pin_watch_event(BTN1)?;
         send_output(emu.handle_io()?);
 
