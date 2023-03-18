@@ -19,5 +19,6 @@ serde_derive = "1.0.152"
 tokio = { version = "1.26.0", features = ["full"] }
 toml = "0.7.2"
 tui = "0.19.0"
+unicode-width = "0.1.10"
 wasmtime = "6.0.0"
 wasmtime-wasi = "6.0.1"

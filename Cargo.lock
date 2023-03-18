@@ -85,6 +85,7 @@ dependencies = [
  "tokio",
  "toml 0.7.2",
  "tui",
+ "unicode-width",
  "wasmtime",
  "wasmtime-wasi",
 ]

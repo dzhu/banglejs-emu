@@ -21,14 +21,14 @@ use tokio::{
 use tui::{
     backend::{Backend, CrosstermBackend},
     layout::{Alignment, Rect},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Borders},
     Terminal,
 };
 
 use crate::{
     emu::{Input, Output, Screen},
     option_future,
-    tui_extras::{Blocked, TuiScreen},
+    tui_extras::{Blocked, Console, TuiScreen},
 };
 
 #[derive(Debug)]
@@ -84,7 +84,7 @@ pub async fn run_tui(
                     .title("Console")
                     .title_alignment(Alignment::Center)
                     .borders(Borders::ALL),
-                Paragraph::new(String::from_utf8_lossy(output)),
+                Console::new(String::from_utf8_lossy(output)),
             );
             f.render_widget(output, Rect::new(w1, 0, w2, height));
         })?;

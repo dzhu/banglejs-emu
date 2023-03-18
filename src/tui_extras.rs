@@ -1,9 +1,11 @@
 use tui::{
     buffer::Buffer,
     layout::{Alignment, Rect},
-    style::Color,
+    style::{Color, Style},
+    text::Text,
     widgets::{Block, StatefulWidget, Widget},
 };
+use unicode_width::UnicodeWidthStr;
 
 use crate::emu::{self, Screen};
 
@@ -12,6 +14,51 @@ fn get_line_offset(line_width: u16, text_area_width: u16, alignment: Alignment) 
         Alignment::Center => (text_area_width / 2).saturating_sub(line_width / 2),
         Alignment::Right => text_area_width.saturating_sub(line_width),
         Alignment::Left => 0,
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Console<'a> {
+    text: Text<'a>,
+}
+
+impl<'a> Console<'a> {
+    pub fn new<T>(text: T) -> Console<'a>
+    where
+        T: Into<Text<'a>>,
+    {
+        Console { text: text.into() }
+    }
+}
+
+impl<'a> Widget for Console<'a> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        if area.height < 1 {
+            return;
+        }
+
+        let mut y = area.height - 1;
+        for line in self.text.lines.iter().rev() {
+            let mut x = 0;
+            for ch in line
+                .0
+                .iter()
+                .flat_map(|span| span.styled_graphemes(Style::default()))
+            {
+                let symbol = ch.symbol;
+                buf.get_mut(area.left() + x, area.top() + y)
+                    .set_symbol(if symbol.is_empty() { " " } else { symbol });
+                x += symbol.width() as u16;
+                if x >= area.width {
+                    break;
+                }
+            }
+
+            match y.checked_sub(1) {
+                Some(y2) => y = y2,
+                None => break,
+            }
+        }
     }
 }
 
