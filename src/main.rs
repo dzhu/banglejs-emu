@@ -43,13 +43,22 @@ enum FileContents {
     Contents(String),
 }
 
+#[derive(Clone, Debug, Deserialize)]
+struct FileSpec {
+    #[serde(default)]
+    evaluate: bool,
+
+    #[serde(flatten)]
+    contents: FileContents,
+}
+
 #[derive(Clone, Debug, Default, Deserialize)]
 struct Config {
     #[serde(default)]
     factory_reset: bool,
     flash_initial_contents_file: Option<String>,
     #[serde(default)]
-    storage: HashMap<String, FileContents>,
+    storage: HashMap<String, FileSpec>,
     startup: Option<String>,
 }
 
@@ -84,22 +93,28 @@ impl Config {
             general_purpose::STANDARD_NO_PAD.encode(b)
         }
 
-        for (path, contents) in &self.storage {
-            let contents = match contents {
+        for (path, spec) in &self.storage {
+            let contents = match &spec.contents {
                 FileContents::Path(p) => {
                     fs::read(p).with_context(|| format!("Failed to load file {p:?}"))?
                 }
                 FileContents::Contents(s) => s.clone().into_bytes(),
             };
             info!("writing {} bytes to {}", contents.len(), path);
-            send_string(
+            let s = if spec.evaluate {
+                format!(
+                    "\x10require('Storage').write(atob('{}'), eval(atob('{}')));\n",
+                    b64(path.as_bytes()),
+                    b64(&contents),
+                )
+            } else {
                 format!(
                     "\x10require('Storage').write(atob('{}'), atob('{}'));\n",
                     b64(path.as_bytes()),
-                    b64(&contents)
+                    b64(&contents),
                 )
-                .into_bytes(),
-            )
+            };
+            send_string(s.into_bytes())
         }
 
         if let Some(s) = &self.startup {

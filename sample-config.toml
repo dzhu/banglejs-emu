@@ -12,13 +12,27 @@ load();
 
 
 ## If a clone of the BangleApps repo (https://github.com/espruino/BangleApps) is
-## present at `../BangleApps`, uncommenting the section below will change the
-## clock app to Anton Clock Plus. It overwrites the base Anton Clock files
+## present at `../BangleApps`, uncommenting the section below will install the
+## file manager app on the watch.
+
+# [storage."fileman.info"]
+# contents = '{"type": "app", "name": "File manager", "src": "fileman.app.js", "icon": "fileman.img"}'
+
+# [storage."fileman.app.js"]
+# path = "../BangleApps/apps/fileman/fileman.app.js"
+
+# [storage."fileman.img"]
+# evaluate = true
+# path = "../BangleApps/apps/fileman/fileman-icon.js"
+
+
+## A slightly more involved example: uncommenting the section below will change
+## the clock app to Anton Clock Plus. It overwrites the base Anton Clock files
 ## directly instead of using `antonclkplus` as the app name because the chosen
 ## clock is already set by the time we create these files in storage.
 
 # [storage."antonclk.info"]
-# contents = '{"type": "clock", "name": "Anton Clock Plus", "src": "antonclk.app.js"}'
+# contents = '{"type": "clock", "name": "Anton Clock Plus", "src": "antonclk.app.js", "icon": "antonclk.img"}'
 
 # [storage."antonclk.app.js"]
 # path = "../BangleApps/apps/antonclkplus/app.js"
@@ -28,3 +42,7 @@ load();
 
 # [storage."antonclk.json"]
 # contents = '{"secondsMode": "Always", "secondsColoured": true, "secondsWithColon": true, "dateOnMain": "ISO8601"}'
+
+# [storage."antonclk.img"]
+# evaluate = true
+# path = "../BangleApps/apps/antonclkplus/app-icon.js"
