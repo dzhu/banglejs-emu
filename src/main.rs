@@ -118,6 +118,9 @@ struct Args {
     #[arg(short = 'c')]
     config_path: Option<PathBuf>,
 
+    #[arg(short = 'o')]
+    log_file: Option<PathBuf>,
+
     wasm_path: PathBuf,
 }
 
@@ -213,17 +216,21 @@ async fn run_emu(
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let log_file = "/tmp/emu.log";
-    Builder::from_default_env()
-        .format_timestamp_micros()
-        .target(Target::Pipe(Box::new(
-            File::create(log_file)
-                .with_context(|| format!("Failed to create log file {log_file}"))?,
-        )))
-        .init();
+    let args = Args::parse();
+
+    if let Some(log_file) = args.log_file {
+        Builder::from_default_env()
+            .format_timestamp_micros()
+            .target(Target::Pipe(Box::new(
+                File::options()
+                    .append(true)
+                    .open(&log_file)
+                    .with_context(|| format!("Failed to create log file {log_file:?}"))?,
+            )))
+            .init();
+    }
 
     // Initialize emulator from arguments.
-    let args = Args::parse();
     let emu = match &args.config_path {
         Some(path) => Config::read(path)
             .with_context(|| format!("Failed to open config file {:?}", args.config_path))?,
