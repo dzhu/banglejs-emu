@@ -112,15 +112,21 @@ impl Config {
 
 #[derive(Debug, Parser)]
 struct Args {
-    #[arg(short = 'b')]
-    bind: Option<String>,
+    // These comments should not end in periods due to how they are presented in
+    // the CLI help output.
+    /// The TCP port to bind to
+    #[arg(short = 'b', default_value_t = String::from("localhost:37026"))]
+    bind: String,
 
+    /// A config file to use for setting up the emulator
     #[arg(short = 'c')]
     config_path: Option<PathBuf>,
 
+    /// A file to send emulator logging output to
     #[arg(short = 'o')]
     log_file: Option<PathBuf>,
 
+    /// The compiled firmware
     wasm_path: PathBuf,
 }
 
@@ -248,11 +254,10 @@ async fn main() -> anyhow::Result<()> {
 
     let (quit_tx, _) = broadcast::channel(1);
 
-    let bind = args.bind.as_deref().unwrap_or("127.0.0.1:37026").to_owned();
-
-    let emu_handle = tokio::spawn(run_emu(emu, to_emu_rx, from_emu_tx, quit_tx.subscribe()));
-    let net_handle = tokio::spawn(run_net(bind, to_net_rx, from_net_tx, quit_tx.subscribe()));
-    let ui_handle = tokio::spawn(ui::run_tui(to_ui_rx, from_ui_tx, quit_tx.subscribe()));
+    let q = || quit_tx.subscribe();
+    let emu_handle = tokio::spawn(run_emu(emu, to_emu_rx, from_emu_tx, q()));
+    let net_handle = tokio::spawn(run_net(args.bind, to_net_rx, from_net_tx, q()));
+    let ui_handle = tokio::spawn(ui::run_tui(to_ui_rx, from_ui_tx, q()));
 
     // Run main loop.
     loop {
