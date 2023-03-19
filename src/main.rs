@@ -31,6 +31,7 @@ mod ui;
 
 use crate::{
     emu::{Emulator, Input, Output},
+    futures_extras::{OptionFuture, Task},
     runner::AsyncRunner,
     ui::UIInput,
 };
@@ -179,8 +180,7 @@ async fn run_net(
     let mut buf = vec![0u8; 4096];
 
     loop {
-        let sock_read: futures_extras::OptionFuture<_> =
-            socket.as_mut().map(|s| s.read(&mut buf)).into();
+        let sock_read: OptionFuture<_> = socket.as_mut().map(|s| s.read(&mut buf)).into();
         select! {
             _ = quit.recv() => break,
             new_conn = listener.accept() => {
@@ -270,9 +270,9 @@ async fn main() -> anyhow::Result<()> {
     let (quit_tx, _) = broadcast::channel(1);
 
     let q = || quit_tx.subscribe();
-    let emu_handle = tokio::spawn(run_emu(emu, to_emu_rx, from_emu_tx, q()));
-    let net_handle = tokio::spawn(run_net(args.bind, to_net_rx, from_net_tx, q()));
-    let ui_handle = tokio::spawn(ui::run_tui(to_ui_rx, from_ui_tx, q()));
+    let mut emu = Task::spawn(run_emu(emu, to_emu_rx, from_emu_tx, q()));
+    let mut net = Task::spawn(run_net(args.bind, to_net_rx, from_net_tx, q()));
+    let mut ui = Task::spawn(ui::run_tui(to_ui_rx, from_ui_tx, q()));
 
     // Run main loop.
     loop {
@@ -286,7 +286,9 @@ async fn main() -> anyhow::Result<()> {
                 let _ = to_ui_tx.send(output);
             }
             data = from_net_rx.recv() => {
-                to_emu_tx.send(data.unwrap()).unwrap();
+                if let Some(data) = data {
+                    let _ = to_emu_tx.send(data);
+                }
             }
             input = from_ui_rx.recv() => {
                 match input.unwrap() {
@@ -294,14 +296,32 @@ async fn main() -> anyhow::Result<()> {
                     UIInput::EmuInput(input) => to_emu_tx.send(input).unwrap(),
                 }
             }
+
+            _ = &mut emu => break,
+            _ = &mut net => break,
+            _ = &mut ui => break,
         }
     }
 
     drop(quit_tx);
 
-    emu_handle.await.unwrap().unwrap();
-    net_handle.await.unwrap().unwrap();
-    ui_handle.await.unwrap().unwrap();
+    async fn wait<T, E: Debug>(label: &str, task: Task<Result<T, E>>) {
+        match task.output().await {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => {
+                eprintln!("{label} failed: {e:?}");
+                error!("{label} failed: {e:?}");
+            }
+            Err(e) => {
+                eprintln!("{label} panicked: {e:?}");
+                error!("{label} panicked: {e:?}");
+            }
+        }
+    }
+
+    wait("ui", ui).await;
+    wait("emu", emu).await;
+    wait("net", net).await;
 
     Ok(())
 }
