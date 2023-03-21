@@ -1,4 +1,7 @@
-use std::time::Duration;
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use futures_timer::Delay;
 use tokio::{
@@ -22,30 +25,40 @@ impl AsyncRunner {
         mut input: UnboundedReceiver<Input>,
         output: UnboundedSender<Output>,
     ) -> anyhow::Result<()> {
-        let mut emu = self.emu;
+        let emu = Arc::new(Mutex::new(self.emu));
         let send_output = |chars: Vec<u8>| {
             if !chars.is_empty() {
                 let _ = output.send(Output::Console(chars));
             }
         };
 
-        emu.send_pin_watch_event(BTN1)?;
-        send_output(emu.handle_io()?);
+        {
+            let mut emu = emu.lock().unwrap();
+            emu.send_pin_watch_event(BTN1)?;
+            send_output(emu.handle_io()?);
+        }
 
         loop {
             let mut delay = 1;
             for _ in 0..5 {
-                let d = emu.idle()?;
+                let d = tokio::task::spawn_blocking({
+                    let emu = Arc::clone(&emu);
+                    move || emu.lock().unwrap().idle()
+                })
+                .await??;
                 if d > 0 {
                     delay = d as u64;
                     break;
                 }
             }
-            if emu.gfx_changed()? {
-                let screen = emu.get_screen()?;
-                let _ = output.send(Output::Screen(Box::new(screen)));
+            {
+                let mut emu = emu.lock().unwrap();
+                if emu.gfx_changed()? {
+                    let screen = emu.get_screen()?;
+                    let _ = output.send(Output::Screen(Box::new(screen)));
+                }
+                send_output(emu.handle_io()?);
             }
-            send_output(emu.handle_io()?);
 
             let mut first = true;
             loop {
@@ -58,6 +71,7 @@ impl AsyncRunner {
                     }
                     s = input.recv() => {
                         if let Some(s) = s {
+                            let mut emu = emu.lock().unwrap();
                             match s {
                                 Input::Console(s) => emu.push_string(&s)?,
                                 Input::Touch(x, y, on) => emu.send_touch(x, y, on)?,
