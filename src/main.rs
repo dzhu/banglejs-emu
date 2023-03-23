@@ -244,6 +244,7 @@ async fn main() -> anyhow::Result<()> {
             .format_timestamp_micros()
             .target(Target::Pipe(Box::new(
                 File::options()
+                    .create(true)
                     .append(true)
                     .open(&log_file)
                     .with_context(|| format!("Failed to create log file {log_file:?}"))?,
