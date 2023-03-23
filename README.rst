@@ -28,8 +28,6 @@ Current non-features:
  Installation and usage
 ************************
 
-Clone this repository and set up a recent Rust_ toolchain.
-
 You'll need a version of the Espruino_ firmware compiled to WebAssembly_. The
 Espruino upstream_ currently does not support creating the necessary WebAssembly
 build; see the ``wasm`` `branch of my fork`_ to get a version with the relevant
@@ -43,18 +41,22 @@ on startup (by default, the watch will start with nothing in storage, like in
 the Espruino IDE). The file ``sample-config.toml`` in this repository
 demonstrates a basic config and some commented examples.
 
-Once you have a WebAssembly firmware file and optionally a config file at hand,
-run
+As for the emulator itself, binaries are available at the `GitHub Actions for
+this repository`_ (at least for Linux and Windows, anyway; the macOS build isn't
+working), or you can build it yourself by cloning this repository and setting up
+a recent Rust_ toolchain. To start the emulator, run the first command below if
+you downloaded a binary or the second if you are building it yourself:
 
 .. code:: sh
 
+   banglejs-emu [-c <config file>] <firmware file>
    cargo run --release [-c <config file>] <firmware file>
 
-to start the emulator. The screen and console output will be displayed in the
-terminal; you can click on the screen to provide touch inputs, including drags
-and swipes, and press Enter to press the button. The emulator also exposes the
-emulated watch's console over TCP (listening on ``localhost:37026`` by default;
-use ``-b`` to change). Running ``rlwrap nc localhost 37026`` or ``socat readline
+The screen and console output will be displayed in the terminal; you can click
+on the screen to provide touch inputs, including drags and swipes, and press
+Enter to press the button. The emulator also exposes the emulated watch's
+console over TCP (listening on ``localhost:37026`` by default; use ``-b`` to
+change). Running ``rlwrap nc localhost 37026`` or ``socat readline
 tcp:localhost:37026`` (see rlwrap_, netcat_, socat_) will connect to the console
 with a somewhat shell-like experience.
 
@@ -114,6 +116,8 @@ dual licensed as above, without any additional terms or conditions.
 .. _espruino ide: https://www.espruino.com/ide/
 
 .. _github actions: https://github.com/dzhu/Espruino/actions
+
+.. _github actions for this repository: https://github.com/dzhu/banglejs-emu/actions
 
 .. _mit license: https://opensource.org/licenses/MIT
 
