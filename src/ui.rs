@@ -34,6 +34,7 @@ use crate::{
 #[derive(Debug)]
 pub enum UIInput {
     Quit,
+    Reset,
     Interrupt,
     EmuInput(Input),
 }
@@ -100,9 +101,13 @@ pub async fn run_tui(
     let mut events = EventStream::new();
     let mut button_deadline = None;
     let mut interrupt_deadline = None;
+    let mut reset_deadline = None;
 
     loop {
         let button_timeout: OptionFuture<_> = button_deadline
+            .map(|d| Delay::new(d - Instant::now()))
+            .into();
+        let reset_timeout: OptionFuture<_> = reset_deadline
             .map(|d| Delay::new(d - Instant::now()))
             .into();
         let interrupt_timeout: OptionFuture<_> = interrupt_deadline
@@ -140,9 +145,11 @@ pub async fn run_tui(
                                 // holding the button down.
                                 if button_deadline.is_none() {
                                     tx.send(UIInput::EmuInput(Input::Button(true))).unwrap();
-                                    interrupt_deadline = Some(Instant::now() + Duration::from_millis(1500));
-                                    info!("setting interrupt deadline");
+                                    let now = Instant::now();
+                                    reset_deadline = Some(now + Duration::from_millis(1500));
+                                    interrupt_deadline = Some(now + Duration::from_millis(2000));
                                 }
+
                                 button_deadline = Some(Instant::now() + Duration::from_millis(300));
                             }
                             Char('q') | Esc => tx.send(UIInput::Quit)?,
@@ -171,7 +178,13 @@ pub async fn run_tui(
             _ = button_timeout => {
                 tx.send(UIInput::EmuInput(Input::Button(false))).unwrap();
                 interrupt_deadline = None;
+                reset_deadline = None;
                 button_deadline = None;
+            }
+            _ = reset_timeout => {
+                info!("reset timeout firing");
+                tx.send(UIInput::Reset).unwrap();
+                reset_deadline = None;
             }
             _ = interrupt_timeout => {
                 info!("interrupt timeout firing");

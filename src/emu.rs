@@ -76,13 +76,36 @@ pub enum Output {
     Screen(Box<Screen>),
 }
 
+#[derive(Clone, Default)]
+pub struct Flag(Arc<AtomicBool>);
+
+impl Flag {
+    pub fn set(&self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+
+    pub fn get(&self) -> bool {
+        self.0.load(Ordering::SeqCst)
+    }
+
+    pub fn clear(&self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct Flags {
+    pub interrupt: Flag,
+    pub reset: Flag,
+}
+
 struct State {
     wasi_ctx: WasiCtx,
     pins: Vec<bool>,
     flash: Vec<u8>,
     char_q: Vec<u8>,
     instance: Option<Instance>,
-    interrupt_flag: Arc<AtomicBool>,
+    flags: Flags,
 }
 
 impl State {
@@ -96,7 +119,7 @@ impl State {
             flash: vec![255u8; 1 << 23],
             instance: None,
             char_q: vec![],
-            interrupt_flag: Arc::new(AtomicBool::new(false)),
+            flags: Flags::default(),
         }
     }
 }
@@ -185,7 +208,7 @@ pub struct Emulator {
     funcs: ModuleFuncs,
 
     touch: TouchTracker,
-    interrupt_flag: Arc<AtomicBool>,
+    flags: Flags,
 }
 
 impl Emulator {
@@ -207,7 +230,7 @@ impl Emulator {
             "env",
             "hostIsInterrupted",
             |caller: Caller<'_, State>| -> i32 {
-                let ret = caller.data().interrupt_flag.load(Ordering::SeqCst);
+                let ret = caller.data().flags.interrupt.get();
                 if ret {
                     log::info!("is interrupted!");
                 }
@@ -219,9 +242,21 @@ impl Emulator {
             "env",
             "hostClearInterrupted",
             |caller: Caller<'_, State>| {
-                caller.data().interrupt_flag.store(false, Ordering::SeqCst);
+                caller.data().flags.interrupt.clear();
             },
         )?;
+
+        linker.func_wrap("env", "hostIsReset", |caller: Caller<'_, State>| -> i32 {
+            let ret = caller.data().flags.reset.get();
+            if ret {
+                log::info!("is reset!");
+            }
+            ret.into()
+        })?;
+
+        linker.func_wrap("env", "hostClearReset", |caller: Caller<'_, State>| {
+            caller.data().flags.reset.clear();
+        })?;
 
         linker.func_wrap(
             "env",
@@ -278,7 +313,7 @@ impl Emulator {
         let instance = linker.instantiate(&mut store, &module)?;
 
         store.data_mut().instance = Some(instance);
-        let interrupt_flag = Arc::clone(&store.data().interrupt_flag);
+        let flags = store.data().flags.clone();
 
         let funcs = ModuleFuncs {
             get_gfx_ptr: instance.get_typed_func(&mut store, "jsGfxGetPtr")?,
@@ -295,7 +330,7 @@ impl Emulator {
             instance,
             funcs,
             touch: Default::default(),
-            interrupt_flag,
+            flags,
         })
     }
 
@@ -424,7 +459,7 @@ impl Emulator {
         self.send_pin_watch_event(BTN1)
     }
 
-    pub fn interrupt_flag(&self) -> Arc<AtomicBool> {
-        Arc::clone(&self.interrupt_flag)
+    pub fn flags(&self) -> Flags {
+        self.flags.clone()
     }
 }
