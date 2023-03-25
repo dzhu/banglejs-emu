@@ -10,7 +10,6 @@ use crossterm::{
 };
 use futures::StreamExt;
 use futures_timer::Delay;
-use log::debug;
 use tokio::{
     select,
     sync::{
@@ -122,7 +121,6 @@ pub async fn run_tui(
                 match ev.unwrap().unwrap() {
                     Event::Key(k) => {
                         use event::KeyCode::*;
-                        debug!("key: {k:?}");
                         match k.code {
                             Left => send_string(b"\x10Bangle.emit('swipe', -1, 0);\n".to_vec()),
                             Right => send_string(b"\x10Bangle.emit('swipe', 1, 0);\n".to_vec()),

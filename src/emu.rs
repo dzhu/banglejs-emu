@@ -214,7 +214,7 @@ impl Emulator {
                 let mut flash = mem::take(&mut caller.data_mut().flash);
                 let dst = &mut flash[flash_addr as usize..][..len as usize];
                 memory.read(&caller, base as usize, dst).unwrap();
-                debug!("writing at {flash_addr}: {dst:?}");
+                trace!("writing at {flash_addr}: {dst:?}");
                 caller.data_mut().flash = flash;
             },
         )?;
