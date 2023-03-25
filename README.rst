@@ -42,10 +42,10 @@ the Espruino IDE). The file ``sample-config.toml`` in this repository
 demonstrates a basic config and some commented examples.
 
 As for the emulator itself, binaries are available at the `GitHub Actions for
-this repository`_ (at least for Linux and Windows, anyway; the macOS build isn't
-working), or you can build it yourself by cloning this repository and setting up
-a recent Rust_ toolchain. To start the emulator, run the first command below if
-you downloaded a binary or the second if you are building it yourself:
+this repository`_ (for Linux, macOS, and Windows), or you can build it yourself
+by cloning this repository and setting up a recent Rust_ toolchain. To start the
+emulator, run the first command below if you downloaded a binary or the second
+if you are building it yourself:
 
 .. code:: sh
 
