@@ -235,8 +235,7 @@ async fn run_emu(
     }
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn _main() -> anyhow::Result<()> {
     let args = Args::parse();
 
     if let Some(log_file) = args.log_file {
@@ -311,8 +310,9 @@ async fn main() -> anyhow::Result<()> {
     drop(quit_tx);
 
     async fn wait<T, E: Debug>(label: &str, task: Task<Result<T, E>>) {
+        info!("waiting for {label}...");
         match task.output().await {
-            Ok(Ok(_)) => {}
+            Ok(Ok(_)) => info!("{label} finished!"),
             Ok(Err(e)) => {
                 eprintln!("{label} failed: {e:?}");
                 error!("{label} failed: {e:?}");
@@ -328,5 +328,16 @@ async fn main() -> anyhow::Result<()> {
     wait("emu", emu).await;
     wait("net", net).await;
 
+    info!("done, exiting!");
     Ok(())
+}
+
+fn main() -> anyhow::Result<()> {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let ret = rt.block_on(_main());
+    rt.shutdown_background();
+    ret
 }

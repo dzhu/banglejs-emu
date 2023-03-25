@@ -71,14 +71,18 @@ impl AsyncRunner {
                     }
                     s = input.recv() => {
                         if let Some(s) = s {
-                            let mut emu = emu.lock().unwrap();
-                            match s {
-                                Input::Console(s) => emu.push_string(&s)?,
-                                Input::Touch(x, y, on) => emu.send_touch(x, y, on)?,
-                                Input::Button(on) => {
-                                    emu.press_button(on)?;
+                            let _ = tokio::task::spawn_blocking({
+                                let emu = Arc::clone(&emu);
+                                move || -> anyhow::Result<()> {
+                                    let mut emu = emu.lock().unwrap();
+                                    let _ = match s {
+                                        Input::Console(s) => emu.push_string(&s),
+                                        Input::Touch(x, y, on) => emu.send_touch(x, y, on),
+                                        Input::Button(on) => emu.press_button(on),
+                                    };
+                                    Ok(())
                                 }
-                            }
+                            }).await;
                         }
                     }
                 }
