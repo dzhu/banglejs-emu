@@ -10,6 +10,7 @@ use crossterm::{
 };
 use futures::StreamExt;
 use futures_timer::Delay;
+use log::info;
 use tokio::{
     select,
     sync::{
@@ -33,6 +34,7 @@ use crate::{
 #[derive(Debug)]
 pub enum UIInput {
     Quit,
+    Interrupt,
     EmuInput(Input),
 }
 
@@ -97,9 +99,13 @@ pub async fn run_tui(
     let mut screen: Option<Screen> = None;
     let mut events = EventStream::new();
     let mut button_deadline = None;
+    let mut interrupt_deadline = None;
 
     loop {
         let button_timeout: OptionFuture<_> = button_deadline
+            .map(|d| Delay::new(d - Instant::now()))
+            .into();
+        let interrupt_timeout: OptionFuture<_> = interrupt_deadline
             .map(|d| Delay::new(d - Instant::now()))
             .into();
         select! {
@@ -134,6 +140,8 @@ pub async fn run_tui(
                                 // holding the button down.
                                 if button_deadline.is_none() {
                                     tx.send(UIInput::EmuInput(Input::Button(true))).unwrap();
+                                    interrupt_deadline = Some(Instant::now() + Duration::from_millis(1500));
+                                    info!("setting interrupt deadline");
                                 }
                                 button_deadline = Some(Instant::now() + Duration::from_millis(300));
                             }
@@ -162,7 +170,13 @@ pub async fn run_tui(
             }
             _ = button_timeout => {
                 tx.send(UIInput::EmuInput(Input::Button(false))).unwrap();
+                interrupt_deadline = None;
                 button_deadline = None;
+            }
+            _ = interrupt_timeout => {
+                info!("interrupt timeout firing");
+                tx.send(UIInput::Interrupt).unwrap();
+                interrupt_deadline = None;
             }
         }
     }

@@ -3,6 +3,10 @@ use std::{
     fmt::Display,
     mem,
     path::Path,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -78,6 +82,7 @@ struct State {
     flash: Vec<u8>,
     char_q: Vec<u8>,
     instance: Option<Instance>,
+    interrupt_flag: Arc<AtomicBool>,
 }
 
 impl State {
@@ -91,6 +96,7 @@ impl State {
             flash: vec![255u8; 1 << 23],
             instance: None,
             char_q: vec![],
+            interrupt_flag: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -179,6 +185,7 @@ pub struct Emulator {
     funcs: ModuleFuncs,
 
     touch: TouchTracker,
+    interrupt_flag: Arc<AtomicBool>,
 }
 
 impl Emulator {
@@ -195,6 +202,26 @@ impl Emulator {
             Self::js_handle_io(&mut caller, &instance, &mut char_q).unwrap();
             caller.data_mut().char_q = char_q;
         })?;
+
+        linker.func_wrap(
+            "env",
+            "hostIsInterrupted",
+            |caller: Caller<'_, State>| -> i32 {
+                let ret = caller.data().interrupt_flag.load(Ordering::SeqCst);
+                if ret {
+                    log::info!("is interrupted!");
+                }
+                ret.into()
+            },
+        )?;
+
+        linker.func_wrap(
+            "env",
+            "hostClearInterrupted",
+            |caller: Caller<'_, State>| {
+                caller.data().interrupt_flag.store(false, Ordering::SeqCst);
+            },
+        )?;
 
         linker.func_wrap(
             "env",
@@ -251,6 +278,7 @@ impl Emulator {
         let instance = linker.instantiate(&mut store, &module)?;
 
         store.data_mut().instance = Some(instance);
+        let interrupt_flag = Arc::clone(&store.data().interrupt_flag);
 
         let funcs = ModuleFuncs {
             get_gfx_ptr: instance.get_typed_func(&mut store, "jsGfxGetPtr")?,
@@ -267,6 +295,7 @@ impl Emulator {
             instance,
             funcs,
             touch: Default::default(),
+            interrupt_flag,
         })
     }
 
@@ -393,5 +422,9 @@ impl Emulator {
         // Pin values are expected to be inverted.
         self.store.data_mut().pins[BTN1 as usize] = !on;
         self.send_pin_watch_event(BTN1)
+    }
+
+    pub fn interrupt_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.interrupt_flag)
     }
 }

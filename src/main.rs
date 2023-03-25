@@ -5,6 +5,7 @@ use std::{
     io::{BufRead, BufReader, Read},
     path::{Path, PathBuf},
     str,
+    sync::atomic::Ordering,
 };
 
 use anyhow::Context;
@@ -270,6 +271,8 @@ async fn main() -> anyhow::Result<()> {
 
     let (quit_tx, _) = broadcast::channel(1);
 
+    let interrupt_flag = emu.interrupt_flag();
+
     let q = || quit_tx.subscribe();
     let mut emu = Task::spawn(run_emu(emu, to_emu_rx, from_emu_tx, q()));
     let mut net = Task::spawn(run_net(args.bind, to_net_rx, from_net_tx, q()));
@@ -294,6 +297,7 @@ async fn main() -> anyhow::Result<()> {
             input = from_ui_rx.recv() => {
                 match input.unwrap() {
                     UIInput::Quit => break,
+                    UIInput::Interrupt => interrupt_flag.store(true, Ordering::SeqCst),
                     UIInput::EmuInput(input) => to_emu_tx.send(input).unwrap(),
                 }
             }
