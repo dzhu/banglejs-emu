@@ -269,8 +269,6 @@ async fn _main() -> anyhow::Result<()> {
 
     let (quit_tx, _) = broadcast::channel(1);
 
-    let flags = emu.flags();
-
     let q = || quit_tx.subscribe();
     let mut emu = Task::spawn(run_emu(emu, to_emu_rx, from_emu_tx, q()));
     let mut net = Task::spawn(run_net(args.bind, to_net_rx, from_net_tx, q()));
@@ -295,8 +293,6 @@ async fn _main() -> anyhow::Result<()> {
             input = from_ui_rx.recv() => {
                 match input.unwrap() {
                     UIInput::Quit => break,
-                    UIInput::Reset => flags.reset.set(),
-                    UIInput::Interrupt => flags.interrupt.set(),
                     UIInput::EmuInput(input) => to_emu_tx.send(input).unwrap(),
                 }
             }
