@@ -19,17 +19,18 @@ pub struct AsyncRunner {
     emu: Emulator,
 }
 
-async fn watchdog(mut button_rx: UnboundedReceiver<bool>, flags: Flags) {
+async fn watchdog(
+    mut button_rx: UnboundedReceiver<bool>,
+    flags: Flags,
+    wake_tx: UnboundedSender<()>,
+) {
+    fn deadline_future(d: Option<Instant>) -> OptionFuture<Delay> {
+        d.map(|d| Delay::new(d - Instant::now())).into()
+    }
+
     let mut interrupt_deadline = None;
     let mut reset_deadline = None;
     loop {
-        let reset_timeout: OptionFuture<_> = reset_deadline
-            .map(|d| Delay::new(d - Instant::now()))
-            .into();
-        let interrupt_timeout: OptionFuture<_> = interrupt_deadline
-            .map(|d| Delay::new(d - Instant::now()))
-            .into();
-
         select! {
             button = button_rx.recv() => {
                 if button.unwrap() {
@@ -41,14 +42,19 @@ async fn watchdog(mut button_rx: UnboundedReceiver<bool>, flags: Flags) {
                     reset_deadline = None;
                 }
             }
-            _ = reset_timeout => {
+            _ = deadline_future(reset_deadline) => {
                 info!("reset timeout firing");
                 flags.reset.set();
+                wake_tx.send(()).unwrap();
                 reset_deadline = None;
             }
-            _ = interrupt_timeout => {
-                info!("interrupt timeout firing");
-                flags.interrupt.set();
+            _ = deadline_future(interrupt_deadline) => {
+                if flags.reset.get() {
+                    info!("interrupt timeout firing");
+                    flags.interrupt.set();
+                } else {
+                    info!("reset succeeded, skipping interrupt");
+                }
                 interrupt_deadline = None;
             }
         }
@@ -67,6 +73,7 @@ impl AsyncRunner {
     ) -> anyhow::Result<()> {
         let (input2_tx, mut input2_rx) = mpsc::unbounded_channel();
         let (to_watchdog_tx, to_watchdog_rx) = mpsc::unbounded_channel();
+        let (wake_tx, mut wake_rx) = mpsc::unbounded_channel();
 
         tokio::spawn(async move {
             while let Some(x) = input.recv().await {
@@ -76,7 +83,7 @@ impl AsyncRunner {
                 input2_tx.send(x).unwrap();
             }
         });
-        tokio::spawn(watchdog(to_watchdog_rx, self.emu.flags()));
+        tokio::spawn(watchdog(to_watchdog_rx, self.emu.flags(), wake_tx));
 
         let emu = Arc::new(Mutex::new(self.emu));
         let send_output = |chars: Vec<u8>| {
@@ -122,6 +129,7 @@ impl AsyncRunner {
                     _ = timeout => {
                         break;
                     }
+                    _ = wake_rx.recv() => {}
                     s = input2_rx.recv() => {
                         if let Some(s) = s {
                             tokio::task::spawn_blocking({
