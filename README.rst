@@ -17,10 +17,10 @@ Features:
 -  touchscreen and button input
 -  device console served over TCP
 -  config file for conveniently specifying initial emulator state
+-  reset/interrupt on button hold
 
 Current non-features:
 
--  reset/interrupt on button hold
 -  sensor inputs
 -  screen lock/backlight tracking
 
