@@ -109,11 +109,21 @@ impl Config {
                     b64(&contents),
                 )
             } else {
-                format!(
-                    "\x10require('Storage').write(atob('{}'), atob('{}'));\n",
-                    b64(path.as_bytes()),
-                    b64(&contents),
-                )
+                const CHUNK_SIZE: usize = 1 << 15;
+                contents
+                    .chunks(CHUNK_SIZE)
+                    .enumerate()
+                    .map(|(ind, chunk)| {
+                        format!(
+                            "\x10require('Storage').write(atob('{}'), atob('{}'), {}, {});\n",
+                            b64(path.as_bytes()),
+                            b64(chunk),
+                            ind * CHUNK_SIZE,
+                            contents.len(),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("")
             };
             send_string(s.into_bytes())
         }
